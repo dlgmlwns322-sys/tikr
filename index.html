@@ -302,10 +302,12 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
       </div>
     </div>
 
-    <div class="sec-head"><div class="sec-title" style="font-size:15px;">관련 뉴스</div></div>
-    <div id="newsBox"><div class="spin"></div></div>
+    <div id="newsSection">
+      <div class="sec-head"><div class="sec-title" style="font-size:15px;">관련 뉴스</div></div>
+      <div id="newsBox"><div class="spin"></div></div>
+    </div>
 
-    <div class="alert-card" style="margin-top:12px;">
+    <div class="alert-card" id="alertCard" style="margin-top:12px;">
       <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg><span style="font-size:13px;font-weight:700;">하락 알림 임계치</span><span class="alert-val" id="thVal"></span></div>
       <div class="alert-desc" id="thDesc"></div>
       <div class="slider-wrap">
@@ -368,21 +370,6 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 
 <div class="toast" id="toast"></div>
 
-<!-- 지수·환율·채권·코인 매크로 AI 코멘트 모달 -->
-<div id="macroModal" class="hidden" style="position:fixed;inset:0;z-index:300;background:rgba(20,10,40,.45);display:flex;align-items:flex-end;justify-content:center;">
-  <div style="background:#fff;width:100%;max-width:400px;border-radius:24px 24px 0 0;padding:20px 20px 28px;max-height:70vh;overflow-y:auto;">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <div id="macroModalTitle" style="font-size:16px;font-weight:800;"></div>
-      <button onclick="closeMacroModal()" style="background:none;border:none;font-size:20px;color:var(--ink3);">✕</button>
-    </div>
-    <div class="ai-card" style="margin-top:14px;margin-bottom:0;">
-      <span class="ai-badge">✦ AI 추이 코멘트</span>
-      <div class="ai-body" id="macroModalBody">불러오는 중...</div>
-      <button class="ai-refresh" onclick="genMacroSummary()" id="macroRefreshBtn">새로 분석 →</button>
-    </div>
-  </div>
-</div>
-
 <div class="tabbar">
   <button class="tb-btn active" id="tb-home" onclick="nav('home')"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span class="tb-lbl">홈</span></button>
   <button class="tb-btn" id="tb-manage" onclick="nav('manage')"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg><span class="tb-lbl">관리</span></button>
@@ -419,8 +406,15 @@ const STOCK_META={
 };
 function metaOf(sym){return STOCK_META[sym]||{name:sym,color:'#7C3AED',initial:sym[0]||'?',kr:sym};}
 const won=(n,c)=>{if(n==null)return'—';const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:2});return (c||'$')+s;};
-// 한국 종목(.KS/.KQ)은 원화(뒤에 "원"), 그 외는 달러(앞에 "$")로 표기
-const priceFmt=(sym,n)=>{if(n==null)return'—';const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:2});return /\.(KS|KQ)$/.test(sym)?s+'원':'$'+s;};
+// 한국 종목(.KS/.KQ)·원화 표시 자산은 "원", 채권은 "%", 지수는 단위 없이, 그 외(미국종목·원자재)는 "$"
+const priceFmt=(sym,n)=>{
+  if(n==null)return'—';
+  const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:2});
+  if(/\.(KS|KQ)$/.test(sym)||sym==='USD_KRW'||sym==='BTC_KRW')return s+'원';
+  if(sym==='KR_BOND_3Y')return s+'%';
+  if(sym==='KOSPI'||sym==='KOSDAQ')return s;
+  return '$'+s;
+};
 const pct=n=>(n==null?'—':(n>0?'+':'')+n.toFixed(2)+'%');
 
 // ═══════════════ 네비게이션 ═══════════════
@@ -449,15 +443,27 @@ const INDEX_SYMBOLS=['KOSPI','KOSDAQ','QQQ','USD_KRW'];
 // 심볼별로 각각 따로 조회한다 — 한 번에 합쳐서 limit 걸면 QQQ처럼 1분마다 쌓이는 종목이 40개를 다 차지해버려서
 // 어쩌다 한 번씩만 갱신되는 지수·환율·채권이 밀려나 "데이터 없음"으로 보이는 버그가 있었음.
 const HOME_CARDS=[
-  {sym:'KOSPI',label:'코스피',modal:true},
-  {sym:'KOSDAQ',label:'코스닥',modal:true},
-  {sym:'QQQ',label:'나스닥100(QQQ)',modal:false},
-  {sym:'USD_KRW',label:'원/달러',modal:true},
-  {sym:'XAUUSD',label:'금',modal:true},
-  {sym:'BRENT_CRUDE',label:'브렌트유',modal:true},
-  {sym:'BTC_KRW',label:'비트코인',modal:true},
-  {sym:'KR_BOND_3Y',label:'한국 국고채 3년',modal:true,isRate:true},
+  {sym:'KOSPI',label:'코스피'},
+  {sym:'KOSDAQ',label:'코스닥'},
+  {sym:'QQQ',label:'나스닥100(QQQ)'},
+  {sym:'USD_KRW',label:'원/달러'},
+  {sym:'XAUUSD',label:'금'},
+  {sym:'BRENT_CRUDE',label:'브렌트유'},
+  {sym:'BTC_KRW',label:'비트코인'},
+  {sym:'KR_BOND_3Y',label:'한국 국고채 3년',isRate:true},
 ];
+// 지수·환율·원자재·코인·채권 — 개별종목이 아니라 뉴스/컨센서스/실적일정/알림 대상이 아닌 심볼들.
+// 상세화면은 종목과 동일(차트+기간별비교+AI요약)하게 보여주되, 이 섹션들만 숨긴다.
+const MACRO_SYMBOLS=['KOSPI','KOSDAQ','USD_KRW','XAUUSD','BRENT_CRUDE','BTC_KRW','KR_BOND_3Y'];
+const MACRO_META={
+  KOSPI:{label:'코스피',category:'지수',color:'#DC2626',initial:'K'},
+  KOSDAQ:{label:'코스닥',category:'지수',color:'#2563EB',initial:'K'},
+  USD_KRW:{label:'원/달러',category:'환율',color:'#059669',initial:'$'},
+  XAUUSD:{label:'금',category:'원자재',color:'#B45309',initial:'A'},
+  BRENT_CRUDE:{label:'브렌트유',category:'원자재',color:'#1F2937',initial:'B'},
+  BTC_KRW:{label:'비트코인',category:'코인',color:'#F7931A',initial:'B'},
+  KR_BOND_3Y:{label:'한국 국고채 3년',category:'채권',color:'#7C3AED',initial:'B'},
+};
 async function loadIndexBox(){
   const results=await Promise.all(HOME_CARDS.map(c=>
     sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',c.sym).order('fetched_at',{ascending:false}).limit(1)
@@ -466,10 +472,9 @@ async function loadIndexBox(){
     const q=(results[i].data||[])[0];
     const cls=q&&q.percent_change<0?'down':'up';
     const arrow=q&&q.percent_change<0?'▼':'▲';
-    // QQQ는 이미 종목상세 화면(차트·AI요약)이 있는 워치리스트 종목이라 그쪽으로 연결, 나머지는 매크로 코멘트 모달
-    const onclick=r.modal?`openMacroModal('${r.sym}','${r.label}')`:`nav('detail','${r.sym}')`;
+    // 지수·환율·원자재·코인·채권도 개별종목과 동일한 상세화면(차트+기간별비교+AI요약)으로 연결
     const priceTxt=q?(r.isRate?q.price.toFixed(3)+'%':q.price.toLocaleString('ko-KR',{maximumFractionDigits:2})):'—';
-    return `<div class="idx-card" onclick="${onclick}"><div class="idx-name">${r.label}</div>
+    return `<div class="idx-card" onclick="nav('detail','${r.sym}')"><div class="idx-name">${r.label}</div>
       <div class="idx-price">${priceTxt}</div>
       <div class="idx-chg ${cls}">${q&&q.percent_change!=null?arrow+' '+Math.abs(q.percent_change).toFixed(2)+'%':'—'}</div></div>`;
   }).join('');
@@ -535,17 +540,21 @@ let curPeriod='3M';
 async function openDetail(sym){
   curDetail=sym;curPeriod='3M';
   const isKR=/\.(KS|KQ)$/.test(sym);
+  // 지수·환율·원자재·코인·채권은 개별종목이 아니라 뉴스·컨센서스·실적일정·하락알림 대상이 아님 —
+  // 차트·기간별비교·AI요약(매크로 전용 macro-summary)만 종목상세와 동일하게 보여줌
+  const isMacro=MACRO_SYMBOLS.includes(sym);
   // 한국 종목은 KIS 기간별시세로 실제 1년치가 채워지지만, 미국 종목은 Alpha Vantage 무료 티어가
   // 최근 100거래일(~5개월)까지만 제공해서 "1Y" 탭을 눌러도 데이터가 없었음 — 실제 한도에 맞게 탭 표시
   const lastTab=document.getElementById('lastPeriodTab');
   lastTab.dataset.p=isKR?'1Y':'5M';
   lastTab.textContent=isKR?'1Y':'5M';
   document.querySelectorAll('#periodTabs .ptab').forEach(b=>b.classList.toggle('active',b.dataset.p==='3M'));
-  const m=metaOf(sym);
+  const mm=isMacro?MACRO_META[sym]:null;
+  const m=mm||metaOf(sym);
   document.getElementById('dLogo').style.background=m.color;
   document.getElementById('dLogo').textContent=m.initial;
-  document.getElementById('dTicker').textContent=sym;
-  document.getElementById('dName').textContent=m.name+(isKR?' · '+(sym.endsWith('.KS')?'KOSPI':'KOSDAQ'):' · NASDAQ');
+  document.getElementById('dTicker').textContent=isMacro?mm.label:sym;
+  document.getElementById('dName').textContent=isMacro?mm.category:(m.name+(isKR?' · '+(sym.endsWith('.KS')?'KOSPI':'KOSDAQ'):' · NASDAQ'));
   document.getElementById('dPrice').textContent='로딩중...';
   document.getElementById('dChg').textContent='';
   document.getElementById('aiBody').textContent='아직 요약이 없어요.';
@@ -553,13 +562,17 @@ async function openDetail(sym){
   document.getElementById('consensusBox').innerHTML='';
   document.getElementById('targetPriceBox').textContent='';
   document.getElementById('earningsCard').classList.add('hidden');
-  // 애널리스트 컨센서스·실적일정은 Finnhub(미국) 전용이라 한국 종목엔 해당 카드 자체를 숨김
-  document.getElementById('consensusCard').classList.toggle('hidden',isKR);
+  // 애널리스트 컨센서스·실적일정은 Finnhub(미국 개별종목) 전용이라 한국종목·매크로 자산엔 카드 자체를 숨김
+  document.getElementById('consensusCard').classList.toggle('hidden',isKR||isMacro);
+  document.getElementById('newsSection').classList.toggle('hidden',isMacro);
+  document.getElementById('alertCard').classList.toggle('hidden',isMacro);
 
-  const {data:wRow}=await sb.from('watchlist').select('*').eq('symbol',sym).single();
-  const threshold=wRow?wRow.alert_threshold_pct:-3;
-  document.getElementById('thSlider').value=threshold;
-  updateThUI(threshold);
+  if(!isMacro){
+    const {data:wRow}=await sb.from('watchlist').select('*').eq('symbol',sym).single();
+    const threshold=wRow?wRow.alert_threshold_pct:-3;
+    document.getElementById('thSlider').value=threshold;
+    updateThUI(threshold);
+  }
 
   if(isKR){
     // 한국 개별종목은 시세가 KIS 인덱스 크론으로 안 돌고 있어서, 상세 열 때 즉시 한 번 갱신
@@ -567,8 +580,9 @@ async function openDetail(sym){
   }
   loadChart(sym);
   loadPeriodCompare(sym,isKR);
-  if(!isKR){loadConsensus(sym);loadEarnings(sym);}
-  loadSummary(sym); // 뉴스도 이 안에서 같이 렌더링됨 (top_news)
+  if(!isKR&&!isMacro){loadConsensus(sym);loadEarnings(sym);}
+  if(isMacro)loadMacroSummary(sym);
+  else loadSummary(sym); // 뉴스도 이 안에서 같이 렌더링됨 (top_news)
 }
 async function loadChart(sym){
   // 현재가/등락은 항상 "진짜 최신 1건"으로 (기간 필터와 무관)
@@ -719,42 +733,32 @@ async function loadSummary(sym){
     renderNews(null);
   }
 }
+// 매크로 자산(지수·환율·원자재·코인·채권)은 뉴스 없이 시세추이만 근거로 한 macro-summary 결과를 그대로 씀 (같은 stock_summaries 테이블 재사용)
+async function loadMacroSummary(sym){
+  const {data}=await sb.from('stock_summaries').select('*').eq('symbol',sym).order('created_at',{ascending:false}).limit(1);
+  document.getElementById('aiBody').textContent=(data&&data[0])?data[0].summary:'아직 분석이 없어요. "새로 요약 생성"을 눌러보세요.';
+}
 async function genSummary(){
   const btn=document.getElementById('aiRefreshBtn');
   btn.textContent='생성 중...';btn.disabled=true;
   try{
-    const m=metaOf(curDetail);
-    const res=await fetch(`${SB_URL}/functions/v1/stock-summary`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:curDetail,korean_query:m.kr})});
-    const data=await res.json();
-    if(data.summary){
-      document.getElementById('aiBody').textContent=data.summary;
-      renderNews(data.top_news);
-    }else toast('요약 생성 실패: '+(data.error||''));
+    if(MACRO_SYMBOLS.includes(curDetail)){
+      const mm=MACRO_META[curDetail];
+      const res=await fetch(`${SB_URL}/functions/v1/macro-summary`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:curDetail,label:mm.label})});
+      const data=await res.json();
+      if(data.summary)document.getElementById('aiBody').textContent=data.summary;
+      else toast('분석 실패: '+(data.error||''));
+    }else{
+      const m=metaOf(curDetail);
+      const res=await fetch(`${SB_URL}/functions/v1/stock-summary`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:curDetail,korean_query:m.kr})});
+      const data=await res.json();
+      if(data.summary){
+        document.getElementById('aiBody').textContent=data.summary;
+        renderNews(data.top_news);
+      }else toast('요약 생성 실패: '+(data.error||''));
+    }
   }catch(e){toast('오류: '+e.message);}
   btn.textContent='새로 요약 생성 →';btn.disabled=false;
-}
-// ═══════════════ 매크로(지수·환율·채권·코인) AI 코멘트 모달 ═══════════════
-let curMacro=null,curMacroLabel=null;
-async function openMacroModal(symbol,label){
-  curMacro=symbol;curMacroLabel=label;
-  document.getElementById('macroModalTitle').textContent=label;
-  document.getElementById('macroModal').classList.remove('hidden');
-  document.getElementById('macroModalBody').textContent='불러오는 중...';
-  const {data}=await sb.from('stock_summaries').select('*').eq('symbol',symbol).order('created_at',{ascending:false}).limit(1);
-  document.getElementById('macroModalBody').textContent=(data&&data[0])?data[0].summary:'아직 분석이 없어요. "새로 분석" 눌러서 생성해보세요.';
-}
-function closeMacroModal(){document.getElementById('macroModal').classList.add('hidden');}
-async function genMacroSummary(){
-  if(!curMacro)return;
-  const btn=document.getElementById('macroRefreshBtn');
-  btn.textContent='분석 중...';btn.disabled=true;
-  try{
-    const res=await fetch(`${SB_URL}/functions/v1/macro-summary`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:curMacro,label:curMacroLabel})});
-    const data=await res.json();
-    if(data.summary)document.getElementById('macroModalBody').textContent=data.summary;
-    else toast('분석 실패: '+(data.error||''));
-  }catch(e){toast('오류: '+e.message);}
-  btn.textContent='새로 분석 →';btn.disabled=false;
 }
 function updateThUI(v){
   document.getElementById('thVal').textContent=v+'%';

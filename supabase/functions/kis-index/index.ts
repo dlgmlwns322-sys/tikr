@@ -66,10 +66,27 @@ Deno.serve(async () => {
     }
   }
 
-  const ok = results.filter((r) => !("error" in r));
-  if (ok.length > 0) {
+  const ok = results.filter((r) => !("error" in r)) as any[];
+
+  // 장 마감 중(야간·주말)에도 계속 폴링하면 직전과 동일한 가격이 매번 새 row로 쌓여
+  // MSFT/QQQ에서 겪었던 "평평한 선+끝에 튀는 점" 차트 버그가 재발함 — 직전 저장값과 가격이 같으면 스킵
+  const lastRows = await Promise.all(
+    ok.map(async (r) => {
+      const { data } = await supabase
+        .from("quote_history")
+        .select("price")
+        .eq("symbol", r.symbol)
+        .order("fetched_at", { ascending: false })
+        .limit(1);
+      return { symbol: r.symbol, lastPrice: (data ?? [])[0]?.price };
+    }),
+  );
+  const lastPriceBySymbol = Object.fromEntries(lastRows.map((r) => [r.symbol, r.lastPrice]));
+  const inserts = ok.filter((r) => lastPriceBySymbol[r.symbol] === undefined || lastPriceBySymbol[r.symbol] !== r.price);
+
+  if (inserts.length > 0) {
     await supabase.from("quote_history").insert(
-      ok.map((r: any) => ({
+      inserts.map((r) => ({
         symbol: r.symbol,
         price: r.price,
         change: r.change,
@@ -79,5 +96,5 @@ Deno.serve(async () => {
     );
   }
 
-  return Response.json({ results });
+  return Response.json({ results, inserted: inserts.length });
 });

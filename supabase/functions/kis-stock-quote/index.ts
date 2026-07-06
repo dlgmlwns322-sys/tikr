@@ -85,7 +85,23 @@ Deno.serve(async (req) => {
   }
 
   const ok = results.filter((r): r is { symbol: string; price: number; change: number; percent_change: number; fetched_at: string } => !("error" in r));
-  if (ok.length > 0) await supabase.from("quote_history").insert(ok);
 
-  return Response.json({ quotes: results }, { headers: CORS_HEADERS });
+  // 장 마감 중에도 계속 폴링하면 직전과 동일 가격이 매번 새 row로 쌓이는 문제 방지 (MSFT/QQQ에서 겪은 버그와 동일 원인)
+  const lastRows = await Promise.all(
+    ok.map(async (r) => {
+      const { data } = await supabase
+        .from("quote_history")
+        .select("price")
+        .eq("symbol", r.symbol)
+        .order("fetched_at", { ascending: false })
+        .limit(1);
+      return { symbol: r.symbol, lastPrice: (data ?? [])[0]?.price };
+    }),
+  );
+  const lastPriceBySymbol = Object.fromEntries(lastRows.map((r) => [r.symbol, r.lastPrice]));
+  const inserts = ok.filter((r) => lastPriceBySymbol[r.symbol] === undefined || lastPriceBySymbol[r.symbol] !== r.price);
+
+  if (inserts.length > 0) await supabase.from("quote_history").insert(inserts);
+
+  return Response.json({ quotes: results, inserted: inserts.length }, { headers: CORS_HEADERS });
 });

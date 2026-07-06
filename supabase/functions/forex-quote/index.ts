@@ -32,9 +32,19 @@ Deno.serve(async () => {
     fetched_at: new Date().toISOString(),
   };
 
-  await supabase.from("quote_history").insert(quote);
+  // Frankfurter는 하루 1번만 갱신되는 환율이라, 그보다 자주 폴링해도 직전과 같은 값이면 중복 row로만 쌓임 — 스킵
+  const { data: lastRows } = await supabase
+    .from("quote_history")
+    .select("price")
+    .eq("symbol", "USD_KRW")
+    .order("fetched_at", { ascending: false })
+    .limit(1);
+  const lastPrice = (lastRows ?? [])[0]?.price;
+  if (lastPrice === undefined || lastPrice !== rate) {
+    await supabase.from("quote_history").insert(quote);
+  }
 
-  return Response.json({ quote });
+  return Response.json({ quote, inserted: lastPrice !== rate });
 });
 
 function isoDate(d: Date): string {
