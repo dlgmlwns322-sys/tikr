@@ -38,9 +38,91 @@ async function fetchIndex(token: string, code: string) {
   return await res.json();
 }
 
-Deno.serve(async () => {
+function isoCompact(d: Date): string {
+  return d.toISOString().slice(0, 10).replace(/-/g, "");
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// 코스피/코스닥 지수 과거 일별시세 백필용(1회성 호출). 개별종목(kis-stock-history)과 동일한 KIS
+// 기간별시세 계열 API(국내주식업종기간별시세)를 사용 — 1회 호출당 최대 100건이라 100일 단위로 쪼개서 이어붙임.
+async function fetchIndexChunk(token: string, code: string, from: Date, to: Date) {
+  const url = new URL(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice`);
+  url.searchParams.set("FID_COND_MRKT_DIV_CODE", "U");
+  url.searchParams.set("FID_INPUT_ISCD", code);
+  url.searchParams.set("FID_INPUT_DATE_1", isoCompact(from));
+  url.searchParams.set("FID_INPUT_DATE_2", isoCompact(to));
+  url.searchParams.set("FID_PERIOD_DIV_CODE", "D");
+
+  const res = await fetch(url, {
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+      appkey: KIS_APP_KEY,
+      appsecret: KIS_APP_SECRET,
+      tr_id: "FHKUP03500100",
+      custtype: "P",
+    },
+  });
+  const body = await res.json();
+  if (!res.ok || body.rt_cd !== "0") {
+    throw new Error(`지수 과거시세 조회 실패(${isoCompact(from)}~${isoCompact(to)}): ${JSON.stringify(body)}`);
+  }
+  return body.output2 ?? [];
+}
+
+async function backfillIndex(supabase: any, token: string, code: string, name: string, totalDays: number) {
+  const CHUNK_DAYS = 100;
+  const to = new Date();
+  const allRows: any[] = [];
+  const seenDates = new Set<string>();
+  let chunkEnd = to;
+  let remaining = totalDays;
+  while (remaining > 0) {
+    const span = Math.min(CHUNK_DAYS, remaining);
+    const chunkStart = new Date(chunkEnd.getTime() - span * 24 * 60 * 60 * 1000);
+    const rows = await fetchIndexChunk(token, code, chunkStart, chunkEnd);
+    for (const r of rows) {
+      if (r.stck_bsop_date && !seenDates.has(r.stck_bsop_date)) {
+        seenDates.add(r.stck_bsop_date);
+        allRows.push(r);
+      }
+    }
+    remaining -= span;
+    chunkEnd = new Date(chunkStart.getTime() - 24 * 60 * 60 * 1000);
+    await sleep(1100); // KIS 초당 거래건수 제한 회피 (구간 사이 + 다음 지수로 넘어가기 전에도 적용됨)
+  }
+
+  const sorted = allRows.slice().sort((a, b) => a.stck_bsop_date.localeCompare(b.stck_bsop_date));
+  const inserts = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = parseFloat(sorted[i].bstp_nmix_prpr ?? "0");
+    const prev = i > 0 ? parseFloat(sorted[i - 1].bstp_nmix_prpr ?? "0") : null;
+    const change = prev ? cur - prev : null;
+    const percentChange = prev ? (change! / prev) * 100 : null;
+    const d = sorted[i].stck_bsop_date;
+    const isoDate = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T06:00:00.000Z`;
+    inserts.push({ symbol: name, price: cur, change, percent_change: percentChange, fetched_at: isoDate });
+  }
+  if (inserts.length > 0) {
+    const exactTimestamps = inserts.map((i) => i.fetched_at);
+    await supabase.from("quote_history").delete().eq("symbol", name).in("fetched_at", exactTimestamps);
+    await supabase.from("quote_history").insert(inserts);
+  }
+  return inserts.length;
+}
+
+Deno.serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
   const token = await getToken();
+
+  const { days } = await req.json().catch(() => ({}));
+  if (days) {
+    const counts: Record<string, number> = {};
+    for (const [code, name] of Object.entries(INDEXES)) {
+      counts[name] = await backfillIndex(supabase, token, code, name, days);
+    }
+    return Response.json({ inserted: counts });
+  }
 
   const results = [];
   let first = true;
