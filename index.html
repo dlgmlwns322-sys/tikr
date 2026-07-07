@@ -455,6 +455,9 @@ const HOME_CARDS=[
 // 지수·환율·원자재·코인·채권 — 개별종목이 아니라 뉴스/컨센서스/실적일정/알림 대상이 아닌 심볼들.
 // 상세화면은 종목과 동일(차트+기간별비교+AI요약)하게 보여주되, 이 섹션들만 숨긴다.
 const MACRO_SYMBOLS=['KOSPI','KOSDAQ','USD_KRW','XAUUSD','BRENT_CRUDE','BTC_KRW','KR_BOND_3Y'];
+// 한국 종목(KIS)처럼 실제 1년치 백필이 돼있는 심볼들 — Alpha Vantage(금)/FRED(유가·채권)/업비트(코인) 무료 소스로 채움.
+// KOSPI/KOSDAQ/USD_KRW는 아직 백필 없이 그날그날 쌓이는 중이라 제외(그만큼만 쌓이면 자동으로 데이터 보임).
+const FULL_YEAR_SYMBOLS=['XAUUSD','BRENT_CRUDE','KR_BOND_3Y','BTC_KRW'];
 const MACRO_META={
   KOSPI:{label:'코스피',category:'지수',color:'#DC2626',initial:'K'},
   KOSDAQ:{label:'코스닥',category:'지수',color:'#2563EB',initial:'K'},
@@ -543,11 +546,12 @@ async function openDetail(sym){
   // 지수·환율·원자재·코인·채권은 개별종목이 아니라 뉴스·컨센서스·실적일정·하락알림 대상이 아님 —
   // 차트·기간별비교·AI요약(매크로 전용 macro-summary)만 종목상세와 동일하게 보여줌
   const isMacro=MACRO_SYMBOLS.includes(sym);
-  // 한국 종목은 KIS 기간별시세로 실제 1년치가 채워지지만, 미국 종목은 Alpha Vantage 무료 티어가
-  // 최근 100거래일(~5개월)까지만 제공해서 "1Y" 탭을 눌러도 데이터가 없었음 — 실제 한도에 맞게 탭 표시
+  // 한국 종목은 KIS 기간별시세로, 일부 매크로 자산(금·유가·채권·코인)은 별도 무료 소스로 실제 1년치가
+  // 채워지지만, 미국 종목/지수(KOSPI·KOSDAQ)·환율은 아직 5개월(미국)이거나 그날그날 쌓이는 중이라 구분 표시
+  const hasFullYear=isKR||FULL_YEAR_SYMBOLS.includes(sym);
   const lastTab=document.getElementById('lastPeriodTab');
-  lastTab.dataset.p=isKR?'1Y':'5M';
-  lastTab.textContent=isKR?'1Y':'5M';
+  lastTab.dataset.p=hasFullYear?'1Y':'5M';
+  lastTab.textContent=hasFullYear?'1Y':'5M';
   document.querySelectorAll('#periodTabs .ptab').forEach(b=>b.classList.toggle('active',b.dataset.p==='3M'));
   const mm=isMacro?MACRO_META[sym]:null;
   const m=mm||metaOf(sym);
@@ -652,8 +656,10 @@ async function loadPeriodCompare(sym,isKR){
   const {data:latestRows}=await sb.from('quote_history').select('price').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(1);
   const latest=(latestRows||[])[0];
   if(!latest){box.innerHTML='<div style="color:var(--ink3);font-size:13px;">데이터 없음</div>';return;}
-  // 한국은 KIS로 실제 1년치가 채워지지만, 미국은 Alpha Vantage 무료 티어 한도(최근 100거래일=~5개월)까지만 있어 마지막 구간을 다르게 표기
-  const periods=isKR
+  // 한국종목/일부 매크로 자산(금·유가·채권·코인)은 실제 1년치가 채워지지만, 미국종목/지수·환율은
+  // 아직 5개월(미국, Alpha Vantage 무료 한도) 또는 그날그날 쌓이는 중이라 마지막 구간을 다르게 표기
+  const hasFullYear=isKR||FULL_YEAR_SYMBOLS.includes(sym);
+  const periods=hasFullYear
     ?[{label:'1주 전',ms:PERIOD_MS['1W']},{label:'1개월 전',ms:PERIOD_MS['1M']},{label:'3개월 전',ms:PERIOD_MS['3M']},{label:'1년 전',ms:PERIOD_MS['1Y']}]
     :[{label:'1주 전',ms:PERIOD_MS['1W']},{label:'1개월 전',ms:PERIOD_MS['1M']},{label:'3개월 전',ms:PERIOD_MS['3M']},{label:'5개월 전',ms:PERIOD_MS['5M']}];
   const results=await Promise.all(periods.map(async p=>{
