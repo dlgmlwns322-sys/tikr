@@ -113,6 +113,8 @@ body{background:var(--canvas);color:var(--ink);font-family:'Noto Sans KR',sans-s
 
 .chart-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
 .chart-days{font-size:11.5px;color:var(--ink3);font-weight:700;}
+.bar-tooltip{margin-top:8px;background:#F8F6FD;border-radius:12px;padding:7px 12px;font-size:12px;color:var(--ink2);display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.bar-tooltip b{color:var(--ink);font-size:13px;font-weight:800;white-space:nowrap;}
 .period-tabs{display:flex;gap:4px;margin-top:12px;}
 .ptab{flex:1;text-align:center;font-size:11.5px;font-weight:700;color:var(--ink3);background:none;border:none;padding:6px 0;border-radius:10px;font-family:inherit;}
 .ptab.active{color:var(--purple);background:#EFE7FD;}
@@ -261,7 +263,8 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
   <div class="dsheet">
     <div class="card">
       <div class="chart-hd"><div class="chart-days">추이</div><div class="chart-days" id="chartPct"></div></div>
-      <svg id="chartSvg" viewBox="0 0 320 140" style="width:100%;height:140px;display:block;"></svg>
+      <svg id="chartSvg" viewBox="0 0 320 140" style="width:100%;height:140px;display:block;" onclick="handleChartClick(event)"></svg>
+      <div id="barTooltip" class="bar-tooltip hidden"></div>
       <div class="period-tabs" id="periodTabs">
         <button class="ptab" data-p="1D" onclick="setPeriod('1D')">1D</button>
         <button class="ptab" data-p="1W" onclick="setPeriod('1W')">1W</button>
@@ -587,7 +590,7 @@ async function loadChart(sym){
   // 현재가/등락은 항상 "진짜 최신 1건"으로 (기간 필터와 무관)
   const {data:latestRows}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(1);
   const last=(latestRows||[])[0];
-  if(!last){document.getElementById('dPrice').textContent='데이터 없음';document.getElementById('chartSvg').innerHTML='';return;}
+  if(!last){document.getElementById('dPrice').textContent='데이터 없음';document.getElementById('chartSvg').innerHTML='';document.getElementById('barTooltip').classList.add('hidden');return;}
   document.getElementById('dPrice').textContent=priceFmt(sym,last.price);
   const arrow=last.percent_change<0?'▼':'▲';
   const chgAmt=Math.abs(last.price*(last.percent_change||0)/100);
@@ -603,6 +606,7 @@ async function loadChart(sym){
   if(!rows.length){
     document.getElementById('chartSvg').innerHTML='';
     document.getElementById('chartPct').textContent='데이터 없음';
+    document.getElementById('barTooltip').classList.add('hidden');
     return;
   }
   renderChart(rows);
@@ -613,36 +617,61 @@ function setPeriod(p){
   document.querySelectorAll('#periodTabs .ptab').forEach(b=>b.classList.toggle('active',b.dataset.p===p));
   loadChart(curDetail);
 }
+let curChartRows=[];
 function renderChart(rows){
   // rows는 이미 loadChart에서 선택 기간으로 서버 필터링된 데이터 (여기선 그대로 그리기만 함)
+  curChartRows=rows;
   const prices=rows.map(r=>r.price);
-  const gid='g'+Math.random().toString(36).slice(2,8);
-  const w=320,h=140,pad=6;
+  const w=320,h=140,padTop=8,padBottom=4;
   if(prices.length<2){
-    // 점 하나뿐이면 선 없이 점만 표시
+    // 막대 하나만 그릴 데이터로는 등락 비교가 안 됨
     document.getElementById('chartPct').textContent='데이터 부족';
     document.getElementById('chartPct').className='chart-days';
-    document.getElementById('chartSvg').innerHTML=`<circle cx="${w/2}" cy="${h/2}" r="4.5" fill="#7C3AED"/>`;
+    document.getElementById('chartSvg').innerHTML=`<rect data-idx="0" x="${w/2-14}" y="${h-padBottom-50}" width="28" height="50" rx="3" fill="#7C3AED"/>`;
+    showBarInfo(0);
     return;
   }
   const min=Math.min(...prices),max=Math.max(...prices);
   const rng=(max-min)||1;
-  const isUp=prices[prices.length-1]>=prices[0];
-  const color=isUp?'#E5342B':'#2563EB';
-  const step=(w-pad*2)/(prices.length-1);
-  const pts=prices.map((p,i)=>[pad+i*step,(h-pad)-((p-min)/rng)*(h-pad*2)]);
-  const line='M'+pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' L');
-  const area=line+` L${pts[pts.length-1][0].toFixed(1)},${h} L${pts[0][0].toFixed(1)},${h} Z`;
   const changePct=((prices[prices.length-1]-prices[0])/prices[0]*100);
   document.getElementById('chartPct').textContent=(changePct>=0?'+':'')+changePct.toFixed(1)+'%';
   document.getElementById('chartPct').className='chart-days '+(changePct>=0?'up':'down');
-  document.getElementById('chartSvg').innerHTML=`
-    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="${color}" stop-opacity="0.26"/><stop offset="100%" stop-color="${color}" stop-opacity="0"/>
-    </linearGradient></defs>
-    <path d="${area}" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="${color}" stroke-width="2.4"/>
-    <circle cx="${pts[pts.length-1][0].toFixed(1)}" cy="${pts[pts.length-1][1].toFixed(1)}" r="4.5" fill="${color}" stroke="#fff" stroke-width="2"/>`;
+  const n=prices.length;
+  const usableH=h-padTop-padBottom;
+  const slot=w/n;
+  const barW=Math.max(1.2,slot*0.62);
+  const minBarH=3;
+  let bars='';
+  for(let i=0;i<n;i++){
+    const p=prices[i];
+    const bh=Math.max(minBarH,((p-min)/rng)*usableH);
+    const x=i*slot+(slot-barW)/2;
+    const y=h-padBottom-bh;
+    const up=i===0?true:p>=prices[i-1];
+    const color=up?'#E5342B':'#2563EB';
+    bars+=`<rect data-idx="${i}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="1.2" fill="${color}"/>`;
+  }
+  document.getElementById('chartSvg').innerHTML=bars;
+  showBarInfo(n-1);
+}
+function handleChartClick(ev){
+  const idx=ev.target && ev.target.getAttribute && ev.target.getAttribute('data-idx');
+  if(idx==null)return;
+  showBarInfo(parseInt(idx,10));
+}
+function showBarInfo(idx){
+  const row=curChartRows[idx];
+  const tt=document.getElementById('barTooltip');
+  if(!row){tt.classList.add('hidden');return;}
+  document.querySelectorAll('#chartSvg rect').forEach(r=>{r.style.stroke='none';});
+  const picked=document.querySelector(`#chartSvg rect[data-idx="${idx}"]`);
+  if(picked){picked.style.stroke='#1A1523';picked.style.strokeWidth='1.2';}
+  const d=new Date(row.fetched_at);
+  const dateStr=d.toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'})+' '+d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+  const prev=curChartRows[idx-1];
+  const chg=prev?((row.price-prev.price)/prev.price*100):null;
+  tt.classList.remove('hidden');
+  tt.innerHTML=`<span>${dateStr}</span><b>${priceFmt(curDetail,row.price)}${chg!=null?` <span style="color:${chg>=0?'var(--up)':'var(--down)'}">${chg>=0?'▲':'▼'}${Math.abs(chg).toFixed(2)}%</span>`:''}</b>`;
 }
 // 차트 선 하나로는 "1주 전엔 얼마였는지"가 안 보인다는 피드백 반영 — 기간별로 그때 가격·현재 대비 등락률을 텍스트로 명시
 async function loadPeriodCompare(sym){
