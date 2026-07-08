@@ -311,13 +311,20 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     </div>
 
     <div class="alert-card" id="alertCard" style="margin-top:12px;">
-      <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg><span style="font-size:13px;font-weight:700;">하락 알림 임계치</span><span class="alert-val" id="thVal"></span></div>
-      <div class="alert-desc" id="thDesc"></div>
-      <div class="slider-wrap">
-        <input type="range" id="thSlider" min="-15" max="-1" step="0.5" oninput="onThSlide(this.value)"/>
-        <div class="slider-ticks"><span>−1%</span><span>−8%</span><span>−15%</span></div>
+      <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg><span style="font-size:13px;font-weight:700;">가격 알림</span></div>
+      <div id="alertList" style="margin:10px 0;"></div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <select id="alertKind" style="background:var(--sub-bg);border:none;border-radius:8px;padding:9px 6px;font-size:12px;font-family:inherit;">
+          <option value="pct">퍼센트</option>
+          <option value="price">금액</option>
+        </select>
+        <select id="alertDir" style="background:var(--sub-bg);border:none;border-radius:8px;padding:9px 6px;font-size:12px;font-family:inherit;">
+          <option value="below">이하</option>
+          <option value="above">이상</option>
+        </select>
+        <input type="text" id="alertVal" inputmode="decimal" placeholder="예: -3, 700" style="flex:1;min-width:0;background:var(--sub-bg);border:none;border-radius:8px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+        <button class="btn-save" onclick="addPriceAlert()" style="margin:0;padding:9px 14px;">추가</button>
       </div>
-      <button class="btn-save" onclick="saveThreshold()">알림 저장</button>
     </div>
   </div>
 </div>
@@ -567,14 +574,7 @@ async function openDetail(sym){
   // 애널리스트 컨센서스·실적일정은 Finnhub(미국 개별종목) 전용이라 한국종목·매크로 자산엔 카드 자체를 숨김
   document.getElementById('consensusCard').classList.toggle('hidden',isKR||isMacro);
   document.getElementById('newsSection').classList.toggle('hidden',isMacro);
-  document.getElementById('alertCard').classList.toggle('hidden',isMacro);
-
-  if(!isMacro){
-    const {data:wRow}=await sb.from('watchlist').select('*').eq('symbol',sym).single();
-    const threshold=wRow?wRow.alert_threshold_pct:-3;
-    document.getElementById('thSlider').value=threshold;
-    updateThUI(threshold);
-  }
+  loadAlerts(sym);
 
   if(isKR){
     // 한국 개별종목은 시세가 KIS 인덱스 크론으로 안 돌고 있어서, 상세 열 때 즉시 한 번 갱신
@@ -787,15 +787,32 @@ async function genSummary(){
   }catch(e){toast('오류: '+e.message);}
   btn.textContent='새로 요약 생성 →';btn.disabled=false;
 }
-function updateThUI(v){
-  document.getElementById('thVal').textContent=v+'%';
-  document.getElementById('thDesc').textContent=`하루 등락률이 ${v}% 이하로 떨어지면 알림을 보냅니다.`;
+// 퍼센트/금액 알림 — 종목·지수·환율·원자재·코인·채권 등 모든 심볼 공통(price_alerts 테이블).
+// 퍼센트 알림은 거래 세션당 1회(다음 세션에 조건 충족하면 다시 옴), 금액 알림은 도달하면 1회성으로 자동 비활성화.
+async function loadAlerts(sym){
+  const {data}=await sb.from('price_alerts').select('*').eq('symbol',sym).eq('enabled',true).order('id',{ascending:true});
+  const list=document.getElementById('alertList');
+  if(!data||!data.length){list.innerHTML='<div style="font-size:12px;color:var(--ink3);">설정된 알림이 없어요</div>';return;}
+  list.innerHTML=data.map(a=>{
+    const dirTxt=a.direction==='below'?'이하':'이상';
+    const label=a.kind==='pct'?`퍼센트 ${a.threshold}% ${dirTxt}`:`금액 ${priceFmt(sym,a.threshold)} ${dirTxt}`;
+    return`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);"><span>${label}</span><button type="button" onclick="delPriceAlert(${a.id})" style="background:none;border:none;color:var(--ink3);font-size:15px;line-height:1;cursor:pointer;padding:4px;">✕</button></div>`;
+  }).join('');
 }
-function onThSlide(v){updateThUI(parseFloat(v));}
-async function saveThreshold(){
-  const v=parseFloat(document.getElementById('thSlider').value);
-  const {error}=await sb.from('watchlist').update({alert_threshold_pct:v}).eq('symbol',curDetail);
-  toast(error?'저장 실패':'알림 임계치가 저장됐어요 ✓');
+async function addPriceAlert(){
+  const kind=document.getElementById('alertKind').value;
+  const direction=document.getElementById('alertDir').value;
+  const threshold=parseFloat(document.getElementById('alertVal').value);
+  if(isNaN(threshold)){toast('숫자를 입력해주세요');return;}
+  const {error}=await sb.from('price_alerts').insert({symbol:curDetail,kind,direction,threshold});
+  if(error){toast('추가 실패');return;}
+  document.getElementById('alertVal').value='';
+  toast('알림 추가됐어요 ✓');
+  loadAlerts(curDetail);
+}
+async function delPriceAlert(id){
+  await sb.from('price_alerts').delete().eq('id',id);
+  loadAlerts(curDetail);
 }
 
 // ═══════════════ 워치리스트 관리 ═══════════════
