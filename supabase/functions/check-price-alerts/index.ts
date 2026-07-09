@@ -39,6 +39,14 @@ async function sendTelegram(text: string) {
 Deno.serve(async () => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+  // 나스닥 개별종목 시세는 별도 크론 없이 이 함수(1분 간격)가 finnhub-quote를 호출하는 김에
+  // 같이 갱신되던 구조였음(예전 stock-alert 때부터의 패턴) — 그대로 유지해서 quote_history가
+  // 계속 최신으로 쌓이게 한다.
+  await fetch(`${SUPABASE_URL}/functions/v1/finnhub-quote`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+  }).catch(() => {});
+
   const { data: alerts, error } = await supabase.from("price_alerts").select("*").eq("enabled", true);
   if (error) return Response.json({ error: error.message }, { status: 500 });
   if (!alerts || alerts.length === 0) return Response.json({ checked: 0, fired: [] });
