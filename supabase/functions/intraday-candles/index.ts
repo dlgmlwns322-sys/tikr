@@ -8,9 +8,17 @@ const CORS_HEADERS = {
 // 토스처럼 1일=분봉, 1주=시간봉으로 캔들이 빽빽하게 나오게 하는 용도.
 // 야후 파이낸스 차트 API는 미국뿐 아니라 한국 종목(000660.KS 등)도 분봉을 무인증으로 제공 —
 // 그래서 KIS 분봉(당일만 됨) 대신 야후로 통일. 한국 1주도 61개(30분봉×5일)로 빽빽하게 나온다.
+// 기간별 야후 interval/range. 1일·1주는 장중봉(분/시간), 그 외는 일봉.
+const PERIOD_MAP: Record<string, { interval: string; range: string }> = {
+  "1D": { interval: "5m", range: "1d" },
+  "1W": { interval: "30m", range: "5d" },
+  "1M": { interval: "1d", range: "1mo" },
+  "3M": { interval: "1d", range: "3mo" },
+  "1Y": { interval: "1d", range: "1y" },
+};
+
 async function fetchYahooIntraday(symbol: string, period: string) {
-  const interval = period === "1W" ? "30m" : "5m";
-  const range = period === "1W" ? "5d" : "1d";
+  const { interval, range } = PERIOD_MAP[period] ?? PERIOD_MAP["1D"];
   const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`);
   url.searchParams.set("interval", interval);
   url.searchParams.set("range", range);

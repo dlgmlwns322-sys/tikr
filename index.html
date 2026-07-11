@@ -466,6 +466,9 @@ const HOME_CARDS=[
 // 지수·환율·원자재·코인·채권 — 개별종목이 아니라 뉴스/컨센서스/실적일정/알림 대상이 아닌 심볼들.
 // 상세화면은 종목과 동일(차트+기간별비교+AI요약)하게 보여주되, 이 섹션들만 숨긴다.
 const MACRO_SYMBOLS=['KOSPI','KOSDAQ','USD_KRW','XAUUSD','BRENT_CRUDE','BTC_KRW','KR_BOND_3Y'];
+// 매크로 커스텀ID → 야후 티커(캔들차트용). 야후가 지수·환율·금·유가·비트코인 일봉/분봉 제공.
+// KR_BOND_3Y는 야후에 없어 매핑 제외 → 기존 quote_history 막대 유지.
+const MACRO_YAHOO={KOSPI:'^KS11',KOSDAQ:'^KQ11',USD_KRW:'KRW=X',XAUUSD:'GC=F',BRENT_CRUDE:'BZ=F',BTC_KRW:'BTC-KRW'};
 const MACRO_META={
   KOSPI:{label:'코스피',category:'지수',color:'#DC2626',initial:'K'},
   KOSDAQ:{label:'코스닥',category:'지수',color:'#2563EB',initial:'K'},
@@ -598,25 +601,34 @@ async function loadChart(sym){
   document.getElementById('dChg').textContent=`${arrow} ${priceFmt(sym,chgAmt)} (${Math.abs(last.percent_change||0).toFixed(2)}%)`;
 
   // 캔들 데이터 소스 선택:
-  //  · 1일/1주 → 장중(분·시간)봉을 intraday-candles(야후)에서 on-demand로 받아 캔들(토스처럼 빽빽).
-  //    야후는 미국·한국 둘 다 분봉 제공(한국 1주도 30분봉×5일=61개). 못 주는 자산은 fallback:daily 신호.
-  //  · 3달/1년 → daily_ohlc 일봉 캔들.
-  //  · daily_ohlc도 없는 매크로자산(지수·환율·코인 등)은 맨 아래 quote_history 막대로 폴백.
+  //  · 매크로(지수·환율·금·유가·비트코인) → 커스텀ID를 야후 티커로 매핑해 전 기간 야후 캔들. 미매핑(채권 등)은 막대.
+  //  · 개별종목 1일/1주 → 장중(분·시간)봉을 intraday-candles(야후)에서 캔들(토스처럼 빽빽).
+  //  · 개별종목 3달/1년 → daily_ohlc 일봉 캔들.
+  //  · 어느 경로로도 캔들 못 만들면 맨 아래 quote_history 막대로 폴백.
+  const intraLabel=(curPeriod==='1D'||curPeriod==='1W');
+  const toCandle=x=>({label:intraLabel?fmtIntradayLabel(x.t):x.t.slice(0,10),open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume});
+  const yMacro=MACRO_YAHOO[sym];
   const dailyCandles=async()=>{
     const fromDate=new Date(Date.now()-PERIOD_MS[curPeriod]).toISOString().slice(0,10);
     const {data:ohlc}=await sb.from('daily_ohlc').select('date,open,high,low,close,volume').eq('symbol',sym).gte('date',fromDate).order('date',{ascending:true});
     if(ohlc&&ohlc.length){renderCandles(ohlc.map(x=>({label:x.date,open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})));return true;}
     return false;
   };
-  if(curPeriod==='1D'||curPeriod==='1W'){
+  if(yMacro){
+    // 매크로: 야후 티커로 전 기간 캔들 (1일 5분봉 ~ 1년 일봉)
+    document.getElementById('chartPct').textContent='불러오는 중...';
+    try{
+      const r=await fetch(`${SB_URL}/functions/v1/intraday-candles`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:yMacro,period:curPeriod})});
+      const j=await r.json();
+      if(j.rows&&j.rows.length){renderCandles(j.rows.map(toCandle));return;}
+    }catch(_e){}
+    // 야후 실패 → 아래 quote_history 막대 폴백
+  }else if(curPeriod==='1D'||curPeriod==='1W'){
     document.getElementById('chartPct').textContent='불러오는 중...';
     try{
       const r=await fetch(`${SB_URL}/functions/v1/intraday-candles`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:sym,period:curPeriod})});
       const j=await r.json();
-      if(j.rows&&j.rows.length){
-        renderCandles(j.rows.map(x=>({label:fmtIntradayLabel(x.t),open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})));
-        return;
-      }
+      if(j.rows&&j.rows.length){renderCandles(j.rows.map(toCandle));return;}
       // fallback:daily (한국 1주 등) → 일봉 캔들 시도. 1일은 장중봉 없으면 아래 quote_history 막대로.
       if(curPeriod==='1W'&&await dailyCandles())return;
     }catch(_e){}
