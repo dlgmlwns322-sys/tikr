@@ -38,25 +38,42 @@ Deno.serve(async (req) => {
   }
 
   const timestamps: number[] = result.timestamp ?? [];
-  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
+  const q = result.indicators?.quote?.[0] ?? {};
+  const closes: (number | null)[] = q.close ?? [];
+  const opens: (number | null)[] = q.open ?? [];
+  const highs: (number | null)[] = q.high ?? [];
+  const lows: (number | null)[] = q.low ?? [];
+  const volumes: (number | null)[] = q.volume ?? [];
 
   const rows = timestamps
-    .map((t, i) => ({ t, close: closes[i] }))
+    .map((t, i) => ({ t, open: opens[i], high: highs[i], low: lows[i], close: closes[i], volume: volumes[i] }))
     .filter((r) => r.close != null)
     .sort((a, b) => a.t - b.t);
 
   const inserts = [];
+  const ohlcRows = [];
   for (let i = 0; i < rows.length; i++) {
     const cur = rows[i].close as number;
     const prev = i > 0 ? (rows[i - 1].close as number) : null;
     const change = prev ? cur - prev : null;
     const percentChange = prev ? (change! / prev) * 100 : null;
+    const isoTs = new Date(rows[i].t * 1000).toISOString();
     inserts.push({
       symbol,
       price: cur,
       change,
       percent_change: percentChange,
-      fetched_at: new Date(rows[i].t * 1000).toISOString(),
+      fetched_at: isoTs,
+    });
+    ohlcRows.push({
+      symbol,
+      date: isoTs.slice(0, 10),
+      open: rows[i].open ?? cur,
+      high: rows[i].high ?? cur,
+      low: rows[i].low ?? cur,
+      close: cur,
+      volume: rows[i].volume ?? null,
+      percent_change: percentChange,
     });
   }
 
@@ -65,11 +82,14 @@ Deno.serve(async (req) => {
     const exactTimestamps = inserts.map((r) => r.fetched_at);
     await supabase.from("quote_history").delete().eq("symbol", symbol).in("fetched_at", exactTimestamps);
     await supabase.from("quote_history").insert(inserts);
+    // 캔들차트용 일봉 OHLCV — (symbol, date) 기준 upsert
+    await supabase.from("daily_ohlc").upsert(ohlcRows, { onConflict: "symbol,date" });
   }
 
   return Response.json(
     {
       inserted: inserts.length,
+      ohlc: ohlcRows.length,
       range: inserts.length ? { from: inserts[0].fetched_at.slice(0, 10), to: inserts[inserts.length - 1].fetched_at.slice(0, 10) } : null,
     },
     { headers: CORS_HEADERS },

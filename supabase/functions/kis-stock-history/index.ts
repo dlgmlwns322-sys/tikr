@@ -97,6 +97,7 @@ Deno.serve(async (req) => {
   // 날짜순 정렬(과거→최신) 후 전일 대비 등락 직접 계산 (KIS 일별차트 응답엔 전일대비가 없는 경우가 있어 안전하게 직접 산출)
   const sorted = allRows.slice().sort((a: any, b: any) => a.stck_bsop_date.localeCompare(b.stck_bsop_date));
   const inserts = [];
+  const ohlcRows = [];
   for (let i = 0; i < sorted.length; i++) {
     const cur = parseFloat(sorted[i].stck_clpr ?? "0");
     const prev = i > 0 ? parseFloat(sorted[i - 1].stck_clpr ?? "0") : null;
@@ -105,6 +106,17 @@ Deno.serve(async (req) => {
     const d = sorted[i].stck_bsop_date; // YYYYMMDD
     const isoDate = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T06:00:00.000Z`; // 한국 장마감(15:30 KST)쯤을 UTC로 대략 표기
     inserts.push({ symbol, price: cur, change, percent_change: percentChange, fetched_at: isoDate });
+    // KIS 일별차트 응답: stck_oprc(시가)/stck_hgpr(고가)/stck_lwpr(저가)/stck_clpr(종가)/acml_vol(거래량)
+    ohlcRows.push({
+      symbol,
+      date: `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`,
+      open: parseFloat(sorted[i].stck_oprc ?? "0") || cur,
+      high: parseFloat(sorted[i].stck_hgpr ?? "0") || cur,
+      low: parseFloat(sorted[i].stck_lwpr ?? "0") || cur,
+      close: cur,
+      volume: parseFloat(sorted[i].acml_vol ?? "0") || null,
+      percent_change: percentChange,
+    });
   }
 
   if (inserts.length > 0) {
@@ -113,6 +125,8 @@ Deno.serve(async (req) => {
     const exactTimestamps = inserts.map((i) => i.fetched_at);
     await supabase.from("quote_history").delete().eq("symbol", symbol).in("fetched_at", exactTimestamps);
     await supabase.from("quote_history").insert(inserts);
+    // 캔들차트용 일봉 OHLCV — (symbol, date) 기준 upsert
+    await supabase.from("daily_ohlc").upsert(ohlcRows, { onConflict: "symbol,date" });
   }
 
   const from = new Date(to.getTime() - totalDays * 24 * 60 * 60 * 1000);
