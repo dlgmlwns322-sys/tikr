@@ -223,10 +223,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 <div id="view-home">
   <div class="header">
     <div class="header-row" style="align-items:center;">
-      <div style="display:flex;align-items:center;gap:11px;">
-        <div style="width:44px;height:44px;border-radius:16px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0;">JH</div>
-        <div><div class="header-greet" style="opacity:.85;">Welcome back</div><div style="font-size:17px;font-weight:800;">지훈님 👋</div></div>
-      </div>
+      <div></div>
       <button class="bell-btn" onclick="nav('alerts')"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="bell-dot" id="bellDot"></span></button>
     </div>
     <div style="margin-top:24px;position:relative;z-index:1;">
@@ -269,11 +266,11 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
       <svg id="chartSvg" viewBox="0 0 320 140" style="width:100%;height:140px;display:block;" onclick="handleChartClick(event)"></svg>
       <div id="barTooltip" class="bar-tooltip hidden"></div>
       <div class="period-tabs" id="periodTabs">
-        <button class="ptab" data-p="1D" onclick="setPeriod('1D')">1D</button>
-        <button class="ptab" data-p="1W" onclick="setPeriod('1W')">1W</button>
-        <button class="ptab" data-p="1M" onclick="setPeriod('1M')">1M</button>
-        <button class="ptab active" data-p="3M" onclick="setPeriod('3M')">3M</button>
-        <button class="ptab" data-p="1Y" id="lastPeriodTab" onclick="setPeriod(this.dataset.p)">1Y</button>
+        <button class="ptab" data-p="1D" onclick="setPeriod('1D')">1일</button>
+        <button class="ptab" data-p="1W" onclick="setPeriod('1W')">1주</button>
+        <button class="ptab" data-p="1M" onclick="setPeriod('1M')">1개월</button>
+        <button class="ptab active" data-p="3M" onclick="setPeriod('3M')">3개월</button>
+        <button class="ptab" data-p="1Y" id="lastPeriodTab" onclick="setPeriod(this.dataset.p)">1년</button>
       </div>
     </div>
 
@@ -560,7 +557,7 @@ async function openDetail(sym){
   // 한국종목(KIS)·미국종목(Yahoo Finance)·지수·환율·원자재·채권·코인 전부 무료 소스로 1년치 백필됨
   const lastTab=document.getElementById('lastPeriodTab');
   lastTab.dataset.p='1Y';
-  lastTab.textContent='1Y';
+  lastTab.textContent='1년';
   document.querySelectorAll('#periodTabs .ptab').forEach(b=>b.classList.toggle('active',b.dataset.p==='3M'));
   const mm=isMacro?MACRO_META[sym]:null;
   const m=mm||metaOf(sym);
@@ -622,8 +619,23 @@ function setPeriod(p){
   loadChart(curDetail);
 }
 let curChartRows=[];
-function renderChart(rows){
-  // rows는 이미 loadChart에서 선택 기간으로 서버 필터링된 데이터 (여기선 그대로 그리기만 함)
+// 기간별 목표 막대 개수 — raw 데이터가 수백 개라 그대로 그리면 빽빽해서 안 보임.
+// 1년=12개(월), 1개월=10개(3일), 등으로 묶어서 탭했을 때 각 구간을 볼 수 있게 함.
+const PERIOD_BARS={'1D':12,'1W':7,'1M':10,'3M':13,'1Y':12};
+// ponytail: 시각 기준 아니라 인덱스 균등분할(크론이 규칙적 간격이라 근사 OK). 각 버킷 대표값=구간 마지막 시세.
+function bucketRows(rows,target){
+  if(!target||rows.length<=target)return rows;
+  const size=Math.ceil(rows.length/target);
+  const out=[];
+  for(let i=0;i<rows.length;i+=size){
+    const chunk=rows.slice(i,i+size);
+    out.push(chunk[chunk.length-1]);
+  }
+  return out;
+}
+function renderChart(rowsRaw){
+  // rows는 이미 loadChart에서 선택 기간으로 서버 필터링된 데이터. 여기서 기간별 막대 개수로 묶는다.
+  const rows=bucketRows(rowsRaw,PERIOD_BARS[curPeriod]);
   curChartRows=rows;
   const prices=rows.map(r=>r.price);
   const w=320,h=140,padTop=8,padBottom=4;
