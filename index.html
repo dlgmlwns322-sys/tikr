@@ -597,13 +597,31 @@ async function loadChart(sym){
   const chgAmt=Math.abs(last.price*(last.percent_change||0)/100);
   document.getElementById('dChg').textContent=`${arrow} ${priceFmt(sym,chgAmt)} (${Math.abs(last.percent_change||0).toFixed(2)}%)`;
 
-  // 1일은 장중 스냅샷(분 단위)이라 일봉 캔들이 안 됨 → 기존 quote_history 막대 유지.
-  // 그 외 기간(1주~1년)은 daily_ohlc의 일봉 OHLCV로 캔들차트를 그린다.
-  // daily_ohlc가 없는 자산(지수·환율·코인·원자재·채권 등 매크로)은 아래 quote_history 막대로 폴백.
-  if(curPeriod!=='1D'){
+  // 캔들 데이터 소스 선택:
+  //  · 1일/1주 → 장중(분·시간)봉을 intraday-candles 함수에서 on-demand로 받아 캔들(토스처럼 빽빽).
+  //    한국 1주는 KIS 분봉이 당일만 돼서 fallback:daily 신호가 오면 일봉으로 대체.
+  //  · 3달/1년 → daily_ohlc 일봉 캔들.
+  //  · daily_ohlc도 없는 매크로자산(지수·환율·코인 등)은 맨 아래 quote_history 막대로 폴백.
+  const dailyCandles=async()=>{
     const fromDate=new Date(Date.now()-PERIOD_MS[curPeriod]).toISOString().slice(0,10);
-    const {data:ohlc}=await sb.from('daily_ohlc').select('date,open,high,low,close,volume,percent_change').eq('symbol',sym).gte('date',fromDate).order('date',{ascending:true});
-    if(ohlc&&ohlc.length){renderCandles(ohlc);return;}
+    const {data:ohlc}=await sb.from('daily_ohlc').select('date,open,high,low,close,volume').eq('symbol',sym).gte('date',fromDate).order('date',{ascending:true});
+    if(ohlc&&ohlc.length){renderCandles(ohlc.map(x=>({label:x.date,open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})));return true;}
+    return false;
+  };
+  if(curPeriod==='1D'||curPeriod==='1W'){
+    document.getElementById('chartPct').textContent='불러오는 중...';
+    try{
+      const r=await fetch(`${SB_URL}/functions/v1/intraday-candles`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:sym,period:curPeriod})});
+      const j=await r.json();
+      if(j.rows&&j.rows.length){
+        renderCandles(j.rows.map(x=>({label:fmtIntradayLabel(x.t),open:x.open,high:x.high,low:x.low,close:x.close,volume:x.volume})));
+        return;
+      }
+      // fallback:daily (한국 1주 등) → 일봉 캔들 시도. 1일은 장중봉 없으면 아래 quote_history 막대로.
+      if(curPeriod==='1W'&&await dailyCandles())return;
+    }catch(_e){}
+  }else{
+    if(await dailyCandles())return;
   }
 
   // 차트는 선택된 기간(curPeriod) 범위로 서버에서 직접 필터링해서 가져온다.
@@ -641,6 +659,12 @@ function bucketRows(rows,target){
     out.push(chunk[chunk.length-1]);
   }
   return out;
+}
+// 장중봉 라벨 — ISO 타임스탬프를 한국시간 "MM.DD HH:mm"로 (사용자가 한국이라 미국종목도 KST로 표기, 토스와 동일)
+function fmtIntradayLabel(iso){
+  const d=new Date(iso);
+  const s=d.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+  return s;
 }
 let curIsCandle=false;
 // 일봉 캔들차트 — daily_ohlc 행(date/open/high/low/close/volume/percent_change)을 하루 1개 캔들로 그림.
@@ -739,9 +763,10 @@ function showBarInfo(idx){
   const picked=document.querySelector(`#chartSvg rect[data-idx="${idx}"]`);
   if(picked){picked.style.stroke='#1A1523';picked.style.strokeWidth='1.2';}
   if(curIsCandle){
-    const chg=row.percent_change;
+    const prev=curChartRows[idx-1];
+    const chg=prev&&prev.close?((row.close-prev.close)/prev.close*100):null;
     tt.classList.remove('hidden');
-    tt.innerHTML=`<span>${row.date}</span><b>${priceFmt(curDetail,row.close)}${chg!=null?` <span style="color:${chg>=0?'var(--up)':'var(--down)'}">${chg>=0?'▲':'▼'}${Math.abs(chg).toFixed(2)}%</span>`:''}</b>`;
+    tt.innerHTML=`<span>${row.label}</span><b>${priceFmt(curDetail,row.close)}${chg!=null?` <span style="color:${chg>=0?'var(--up)':'var(--down)'}">${chg>=0?'▲':'▼'}${Math.abs(chg).toFixed(2)}%</span>`:''}</b>`;
     return;
   }
   const d=new Date(row.fetched_at);
