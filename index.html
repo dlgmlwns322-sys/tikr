@@ -598,8 +598,8 @@ async function loadChart(sym){
   document.getElementById('dChg').textContent=`${arrow} ${priceFmt(sym,chgAmt)} (${Math.abs(last.percent_change||0).toFixed(2)}%)`;
 
   // 캔들 데이터 소스 선택:
-  //  · 1일/1주 → 장중(분·시간)봉을 intraday-candles 함수에서 on-demand로 받아 캔들(토스처럼 빽빽).
-  //    한국 1주는 KIS 분봉이 당일만 돼서 fallback:daily 신호가 오면 일봉으로 대체.
+  //  · 1일/1주 → 장중(분·시간)봉을 intraday-candles(야후)에서 on-demand로 받아 캔들(토스처럼 빽빽).
+  //    야후는 미국·한국 둘 다 분봉 제공(한국 1주도 30분봉×5일=61개). 못 주는 자산은 fallback:daily 신호.
   //  · 3달/1년 → daily_ohlc 일봉 캔들.
   //  · daily_ohlc도 없는 매크로자산(지수·환율·코인 등)은 맨 아래 quote_history 막대로 폴백.
   const dailyCandles=async()=>{
