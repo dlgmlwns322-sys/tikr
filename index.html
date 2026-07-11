@@ -597,6 +597,15 @@ async function loadChart(sym){
   const chgAmt=Math.abs(last.price*(last.percent_change||0)/100);
   document.getElementById('dChg').textContent=`${arrow} ${priceFmt(sym,chgAmt)} (${Math.abs(last.percent_change||0).toFixed(2)}%)`;
 
+  // 1일은 장중 스냅샷(분 단위)이라 일봉 캔들이 안 됨 → 기존 quote_history 막대 유지.
+  // 그 외 기간(1주~1년)은 daily_ohlc의 일봉 OHLCV로 캔들차트를 그린다.
+  // daily_ohlc가 없는 자산(지수·환율·코인·원자재·채권 등 매크로)은 아래 quote_history 막대로 폴백.
+  if(curPeriod!=='1D'){
+    const fromDate=new Date(Date.now()-PERIOD_MS[curPeriod]).toISOString().slice(0,10);
+    const {data:ohlc}=await sb.from('daily_ohlc').select('date,open,high,low,close,volume,percent_change').eq('symbol',sym).gte('date',fromDate).order('date',{ascending:true});
+    if(ohlc&&ohlc.length){renderCandles(ohlc);return;}
+  }
+
   // 차트는 선택된 기간(curPeriod) 범위로 서버에서 직접 필터링해서 가져온다.
   // 예전엔 "최근 2000개"를 통째로 가져온 뒤 클라이언트에서 기간 필터링을 했는데, 타임스탬프
   // 버그가 있던 시절 쌓인 대량의 옛날 데이터가 그 2000개 한도를 다 차지해버려서 최근 데이터가
@@ -633,7 +642,38 @@ function bucketRows(rows,target){
   }
   return out;
 }
+let curIsCandle=false;
+// 일봉 캔들차트 — daily_ohlc 행(date/open/high/low/close/volume/percent_change)을 하루 1개 캔들로 그림.
+// 토스처럼 세밀한 얇은 캔들이라 버킷 집계 안 함(일별 그대로). 몸통=시가~종가, 꼬리=고가~저가, ▲빨강/▼파랑.
+function renderCandles(rows){
+  curChartRows=rows;curIsCandle=true;
+  const w=320,h=140,padTop=8,padBottom=4;
+  const highs=rows.map(r=>+r.high),lows=rows.map(r=>+r.low);
+  const min=Math.min(...lows),max=Math.max(...highs);
+  const rng=(max-min)||1;
+  const first=+rows[0].close,last=+rows[rows.length-1].close;
+  const changePct=first?((last-first)/first*100):0;
+  document.getElementById('chartPct').textContent=(changePct>=0?'+':'')+changePct.toFixed(1)+'%';
+  document.getElementById('chartPct').className='chart-days '+(changePct>=0?'up':'down');
+  const n=rows.length,usableH=h-padTop-padBottom,slot=w/n;
+  const cw=Math.max(1,slot*0.62);
+  const map=p=>h-padBottom-((p-min)/rng)*usableH;
+  let svg='';
+  for(let i=0;i<n;i++){
+    const r=rows[i],o=+r.open,c=+r.close,hi=+r.high,lo=+r.low;
+    const up=c>=o,col=up?'#E5342B':'#2563EB';
+    const cx=i*slot+slot/2;
+    const yO=map(o),yC=map(c),bodyY=Math.min(yO,yC),bodyH=Math.max(1,Math.abs(yO-yC));
+    svg+=`<line x1="${cx.toFixed(1)}" y1="${map(hi).toFixed(1)}" x2="${cx.toFixed(1)}" y2="${map(lo).toFixed(1)}" stroke="${col}" stroke-width="0.8"/>`;
+    svg+=`<rect x="${(cx-cw/2).toFixed(1)}" y="${bodyY.toFixed(1)}" width="${cw.toFixed(1)}" height="${bodyH.toFixed(1)}" fill="${col}"/>`;
+    // 얇은 캔들은 탭이 어려워서 슬롯 전체 폭의 투명 히트영역을 겹쳐 둠
+    svg+=`<rect data-idx="${i}" x="${(i*slot).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${h}" fill="transparent"/>`;
+  }
+  document.getElementById('chartSvg').innerHTML=svg;
+  showBarInfo(n-1);
+}
 function renderChart(rowsRaw){
+  curIsCandle=false;
   // rows는 이미 loadChart에서 선택 기간으로 서버 필터링된 데이터. 여기서 기간별 막대 개수로 묶는다.
   const rows=bucketRows(rowsRaw,PERIOD_BARS[curPeriod]);
   curChartRows=rows;
@@ -679,9 +719,15 @@ function showBarInfo(idx){
   const row=curChartRows[idx];
   const tt=document.getElementById('barTooltip');
   if(!row){tt.classList.add('hidden');return;}
-  document.querySelectorAll('#chartSvg rect').forEach(r=>{r.style.stroke='none';});
+  document.querySelectorAll('#chartSvg rect[data-idx]').forEach(r=>{r.style.stroke='none';});
   const picked=document.querySelector(`#chartSvg rect[data-idx="${idx}"]`);
   if(picked){picked.style.stroke='#1A1523';picked.style.strokeWidth='1.2';}
+  if(curIsCandle){
+    const chg=row.percent_change;
+    tt.classList.remove('hidden');
+    tt.innerHTML=`<span>${row.date}</span><b>${priceFmt(curDetail,row.close)}${chg!=null?` <span style="color:${chg>=0?'var(--up)':'var(--down)'}">${chg>=0?'▲':'▼'}${Math.abs(chg).toFixed(2)}%</span>`:''}</b>`;
+    return;
+  }
   const d=new Date(row.fetched_at);
   const dateStr=d.toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'})+' '+d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
   const prev=curChartRows[idx-1];
