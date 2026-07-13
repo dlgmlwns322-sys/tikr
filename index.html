@@ -229,6 +229,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 .cur-toggle{display:inline-flex;background:rgba(255,255,255,.15);border-radius:10px;padding:2px;flex:0 0 auto;}
 .cur-btn{border:none;background:transparent;color:rgba(255,255,255,.6);border-radius:8px;padding:5px 11px;font-size:12px;font-weight:800;font-family:inherit;}
 .cur-btn.on{background:#fff;color:var(--purple);}
+.hp-toggle{display:flex;background:#EDE9F7;border-radius:12px;padding:3px;margin-bottom:14px;}
+.hp-btn{flex:1;border:none;background:transparent;color:var(--ink3);border-radius:9px;padding:8px 0;font-size:13px;font-weight:800;font-family:inherit;}
+.hp-btn.on{background:#fff;color:var(--purple);box-shadow:0 1px 4px rgba(46,16,101,.1);}
 </style>
 </head>
 <body>
@@ -241,12 +244,17 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
       <button class="bell-btn" onclick="nav('alerts')"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="bell-dot" id="bellDot"></span></button>
     </div>
     <div style="margin-top:24px;position:relative;z-index:1;">
-      <div style="font-size:12px;opacity:.7;letter-spacing:.5px;">오늘의 관심 종목 등락 · 평균</div>
+      <div id="hsTitle" style="font-size:12px;opacity:.7;letter-spacing:.5px;">오늘의 관심 종목 등락 · 평균</div>
       <div style="display:flex;align-items:baseline;gap:10px;margin-top:6px;"><span style="font-size:44px;font-weight:800;letter-spacing:-1px;" id="hsAvgPct">—</span><span style="font-size:12.5px;opacity:.7;" id="hsUpdated">갱신 —</span></div>
       <div style="display:flex;gap:5px;margin-top:16px;" id="hsRatioBar"></div>
     </div>
   </div>
   <div class="sheet">
+    <div class="hp-toggle">
+      <button class="hp-btn on" data-hp="day" onclick="setHomePeriod('day')">당일</button>
+      <button class="hp-btn" data-hp="week" onclick="setHomePeriod('week')">1주</button>
+      <button class="hp-btn" data-hp="month" onclick="setHomePeriod('month')">1개월</button>
+    </div>
     <div class="sec-head"><div class="sec-title">지수 · 원자재 · 코인 · 채권</div></div>
     <div id="indexBox" style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:4px;"></div>
 
@@ -454,6 +462,7 @@ const won=(n,c)=>{if(n==null)return'—';const s=Math.abs(n).toLocaleString('ko-
 // 미국 달러 표시 심볼 판별(한국주식·원화·지수·채권 제외 = 달러로 표시되는 것). 미국개별주식·QQQ 등.
 const isUsdSym=(sym)=>!(/\.(KS|KQ)$/.test(sym)||sym==='USD_KRW'||sym==='BTC_KRW'||sym==='KR_BOND_3Y'||sym==='KOSPI'||sym==='KOSDAQ');
 let usdView='usd',FX=null; // 미국주식 표시통화 토글('usd'|'krw'), FX=현재 USD/원 환율
+let homePeriod='day'; // 홈 기간 토글: 'day'(당일)|'week'(1주)|'month'(1개월)
 const priceFmt=(sym,n)=>{
   if(n==null)return'—';
   // 미국주식(달러)인데 '원 보기' 모드면 현재 환율로 원 환산해서 표시
@@ -531,19 +540,40 @@ const MACRO_META={
   BTC_KRW:{label:'비트코인',category:'코인',color:'#F7931A',initial:'B'},
   KR_BOND_3Y:{label:'한국 국고채 3년',category:'채권',color:'#7C3AED',initial:'B'},
 };
+// 기간별 시세 조회. day=오늘 등락(percent_change)+최근 30점, week/month=기간시작 대비 등락+기간 최근 60점.
+// 미국주식은 1분마다 쌓여 월 범위가 매우 크므로(1000행 캡), 등락률은 "최신 vs 기간시작" 각 1행으로 정확히 계산.
+const PERIOD_DAYS={week:7,month:30};
+async function periodQuote(sym){
+  if(homePeriod==='day'){
+    const {data}=await sb.from('quote_history').select('*').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(30);
+    const rows=data||[];
+    return {latest:rows[0]||null,pct:rows[0]?rows[0].percent_change:null,series:rows.slice().reverse()};
+  }
+  const cutoff=new Date(Date.now()-PERIOD_DAYS[homePeriod]*86400000).toISOString();
+  const [descRes,startRes]=await Promise.all([
+    sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).gte('fetched_at',cutoff).order('fetched_at',{ascending:false}).limit(60),
+    sb.from('quote_history').select('price,fetched_at').eq('symbol',sym).gte('fetched_at',cutoff).order('fetched_at',{ascending:true}).limit(1)
+  ]);
+  const desc=descRes.data||[],start=(startRes.data||[])[0],latest=desc[0]||null;
+  const pct=(latest&&start&&start.price)?(latest.price-start.price)/start.price*100:(latest?latest.percent_change:null);
+  return {latest,pct,series:desc.slice().reverse()};
+}
+function setHomePeriod(p){
+  homePeriod=p;
+  document.querySelectorAll('.hp-btn').forEach(b=>b.classList.toggle('on',b.dataset.hp===p));
+  loadHome();
+}
 async function loadIndexBox(){
-  const results=await Promise.all(HOME_CARDS.map(c=>
-    sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',c.sym).order('fetched_at',{ascending:false}).limit(1)
-  ));
+  const results=await Promise.all(HOME_CARDS.map(c=>periodQuote(c.sym)));
   document.getElementById('indexBox').innerHTML=HOME_CARDS.map((r,i)=>{
-    const q=(results[i].data||[])[0];
-    const cls=q&&q.percent_change<0?'down':'up';
-    const arrow=q&&q.percent_change<0?'▼':'▲';
+    const {latest:q,pct}=results[i];
+    const cls=pct!=null&&pct<0?'down':'up';
+    const arrow=pct!=null&&pct<0?'▼':'▲';
     // 지수·환율·원자재·코인·채권도 개별종목과 동일한 상세화면(차트+기간별비교+AI요약)으로 연결
     const priceTxt=q?(r.isRate?q.price.toFixed(3)+'%':q.price.toLocaleString('ko-KR',{maximumFractionDigits:2})):'—';
     return `<div class="idx-card" onclick="nav('detail','${r.sym}')"><div class="idx-name">${r.label}</div>
       <div class="idx-price">${priceTxt}</div>
-      <div class="idx-chg ${cls}">${q&&q.percent_change!=null?arrow+' '+Math.abs(q.percent_change).toFixed(2)+'%':'—'}</div></div>`;
+      <div class="idx-chg ${cls}">${pct!=null?arrow+' '+Math.abs(pct).toFixed(2)+'%':'—'}</div></div>`;
   }).join('');
 }
 // 미국주식 $/₩ 표시 토글 — 현재 환율로 원 환산. 관심종목 헤더의 버튼에서 호출.
@@ -566,38 +596,34 @@ async function loadHome(){
   const wl=wlRaw.filter(w=>!INDEX_SYMBOLS.includes(w.symbol));
   if(!wl.length){document.getElementById('watchlistBox').innerHTML='<div class="empty-box">워치리스트가 비어있어요. 관리 탭에서 추가해보세요.</div>';return;}
 
-  // 종목별로 각각 최신 30개 조회 — 한 쿼리(.in+limit)로 묶으면 1분마다 쌓이는 미국종목이 최근 행을
-  // 독식해서, 장마감 후 갱신이 멈추는 한국종목(장중에만 시세)의 최신 행이 밀려나 "—"로 보이던 버그.
-  const latest={},series={};
-  const qhResults=await Promise.all(wl.map(w=>
-    sb.from('quote_history').select('*').eq('symbol',w.symbol).order('fetched_at',{ascending:false}).limit(30)
-  ));
-  wl.forEach((w,i)=>{
-    const rows=(qhResults[i]&&qhResults[i].data)||[];
-    if(rows.length){latest[w.symbol]=rows[0];series[w.symbol]=rows.slice().reverse();}
-  });
-
+  // 선택 기간(당일/1주/1개월)에 맞춰 종목별 등락률·추이 조회. 헤더 평균도 같은 기간 기준.
+  const pqResults=await Promise.all(wl.map(w=>periodQuote(w.symbol)));
   let up=0,down=0,latestTime=null,pctSum=0,pctCount=0;
-  const html=wl.map(w=>{
-    const q=latest[w.symbol];const m=metaOf(w.symbol);
-    if(q){if(q.percent_change>0)up++;else if(q.percent_change<0)down++;
-      if(q.percent_change!=null){pctSum+=q.percent_change;pctCount++;}
-      const t=new Date(q.fetched_at);if(!latestTime||t>latestTime)latestTime=t;}
-    const cls=q&&q.percent_change<0?'down':'up';
-    const arrow=q&&q.percent_change<0?'▼':'▲';
+  const html=wl.map((w,i)=>{
+    const {latest:q,pct,series:ser}=pqResults[i];const m=metaOf(w.symbol);
+    if(q){
+      if(pct!=null){if(pct>0)up++;else if(pct<0)down++;pctSum+=pct;pctCount++;}
+      const t=new Date(q.fetched_at);if(!latestTime||t>latestTime)latestTime=t;
+    }
+    const cls=pct!=null&&pct<0?'down':'up';
+    const arrow=pct!=null&&pct<0?'▼':'▲';
     return `<div class="gcard" onclick="nav('detail','${w.symbol}')">
       <div class="gcard-top">
         <div class="gcard-logo" style="background:${m.color}">${m.initial}</div>
-        <span class="gcard-badge ${cls}">${q?arrow+Math.abs(q.percent_change).toFixed(2)+'%':'—'}</span>
+        <span class="gcard-badge ${cls}">${pct!=null?arrow+Math.abs(pct).toFixed(2)+'%':'—'}</span>
       </div>
       <div class="gcard-ticker">${w.symbol}</div>
       <div class="gcard-name">${m.name}</div>
-      <svg width="100%" height="30" viewBox="0 0 120 30" preserveAspectRatio="none" style="margin-top:6px;">${sparkPath(series[w.symbol]||[],cls,120,30)}</svg>
+      <svg width="100%" height="30" viewBox="0 0 120 30" preserveAspectRatio="none" style="margin-top:6px;">${sparkPath(ser||[],cls,120,30)}</svg>
       <div class="gcard-price">${q?priceFmt(w.symbol,q.price):'—'}</div>
     </div>`;
   }).join('');
   document.getElementById('watchlistBox').innerHTML=html;
-  document.getElementById('hsUpdated').textContent='평균 · '+(latestTime?latestTime.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+' 기준':'—');
+  const periodLabel={day:'오늘',week:'1주',month:'1개월'}[homePeriod];
+  document.getElementById('hsTitle').textContent=(homePeriod==='day'?'오늘의':periodLabel)+' 관심 종목 등락 · 평균';
+  document.getElementById('hsUpdated').textContent=homePeriod==='day'
+    ?'평균 · '+(latestTime?latestTime.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+' 기준':'—')
+    :periodLabel+' 전 대비 · 평균';
   const avgPct=pctCount?pctSum/pctCount:null;
   document.getElementById('hsAvgPct').textContent=avgPct==null?'—':(avgPct>=0?'+':'')+avgPct.toFixed(1)+'%';
   const total=Math.max(up+down,1);
