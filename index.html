@@ -880,7 +880,7 @@ function renderNews(topNews){
     box.innerHTML='<div class="empty-box">아직 관련 뉴스가 없어요. "새로 요약 생성"을 눌러보세요.</div>';
     return;
   }
-  box.innerHTML=topNews.slice(0,3).map(n=>
+  box.innerHTML=topNews.slice(0,6).map(n=>
     `<a class="news-link" href="${n.link}" target="_blank"><div class="news-card"><div class="news-top"><span class="news-badge kr">국내 · 네이버</span></div><div class="news-head">${(n.title||'').replace(/<[^>]+>/g,'')}</div></div></a>`
   ).join('');
 }
