@@ -138,7 +138,9 @@ ${JSON.stringify((krNews.items ?? []).map((n: any, i: number) => ({ idx: i, titl
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          maxOutputTokens: 4096,
+          // 뉴스 6건까지 근거로 종합 추론시키면서 thinking 토큰도 같은 예산을 나눠 쓰다 보니
+          // 4096으론 가끔 답변이 잘려 JSON이 깨졌었음(finishReason=MAX_TOKENS) → 여유 있게 상향
+          maxOutputTokens: 8192,
           responseMimeType: "application/json",
           responseSchema: schema,
           // 여러 뉴스를 시세 흐름과 엮어 원인을 종합해야 해서 thinkingBudget 0(즉답)은 너무 얕음 —
@@ -153,12 +155,22 @@ ${JSON.stringify((krNews.items ?? []).map((n: any, i: number) => ({ idx: i, titl
   }
 
   const geminiBody = await geminiRes.json();
+  const finishReason = geminiBody.candidates?.[0]?.finishReason;
   const raw = geminiBody.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
-  let parsed: { summary?: string; top_news?: { title: string; link: string }[] };
+  let parsed: { summary?: string; top_news?: { title: string; link: string }[] } | null = null;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    parsed = { summary: raw, top_news: [] };
+    parsed = null;
+  }
+  // 응답이 잘려서(MAX_TOKENS) JSON을 못 닫으면 raw가 깨진 텍스트 그대로 남는데, 이걸 그대로
+  // summary에 흘려보내면 사용자에게 JSON 잔해가 그대로 노출된다 — 이럴 땐 원문을 흘려보내지 말고
+  // 에러로 처리해서 사용자가 재시도하게 한다.
+  if (!parsed) {
+    return Response.json(
+      { error: "gemini_incomplete", detail: `finishReason=${finishReason}, 응답이 완성되지 못했어요. 다시 시도해주세요.` },
+      { status: 502, headers: CORS_HEADERS },
+    );
   }
 
   const summary = parsed.summary ?? "";
