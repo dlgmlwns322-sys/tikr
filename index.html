@@ -594,7 +594,7 @@ async function openDetail(sym){
   document.getElementById('earningsCard').classList.add('hidden');
   // 애널리스트 컨센서스·실적일정은 Finnhub(미국 개별종목) 전용이라 한국종목·매크로 자산엔 카드 자체를 숨김
   document.getElementById('consensusCard').classList.toggle('hidden',isKR||isMacro);
-  document.getElementById('newsSection').classList.toggle('hidden',isMacro);
+  // 매크로 자산도 macro-summary가 국내뉴스를 근거로 쓰므로 뉴스 섹션 노출(과거엔 뉴스 자체가 없어 숨겼었음)
   loadAlerts(sym);
 
   if(isKR){
@@ -893,10 +893,16 @@ async function loadSummary(sym){
     renderNews(null);
   }
 }
-// 매크로 자산(지수·환율·원자재·코인·채권)은 뉴스 없이 시세추이만 근거로 한 macro-summary 결과를 그대로 씀 (같은 stock_summaries 테이블 재사용)
+// 매크로 자산(지수·환율·원자재·코인·채권)도 시세추이+국내뉴스 근거로 한 macro-summary 결과를 씀 (같은 stock_summaries 테이블 재사용)
 async function loadMacroSummary(sym){
   const {data}=await sb.from('stock_summaries').select('*').eq('symbol',sym).order('created_at',{ascending:false}).limit(1);
-  document.getElementById('aiBody').textContent=(data&&data[0])?data[0].summary:'아직 분석이 없어요. "새로 요약 생성"을 눌러보세요.';
+  if(data&&data[0]){
+    document.getElementById('aiBody').textContent=data[0].summary;
+    renderNews(data[0].sources?.top_news);
+  }else{
+    document.getElementById('aiBody').textContent='아직 분석이 없어요. "새로 요약 생성"을 눌러보세요.';
+    renderNews(null);
+  }
 }
 async function genSummary(){
   const btn=document.getElementById('aiRefreshBtn');
@@ -906,8 +912,10 @@ async function genSummary(){
       const mm=MACRO_META[curDetail];
       const res=await fetch(`${SB_URL}/functions/v1/macro-summary`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:curDetail,label:mm.label})});
       const data=await res.json();
-      if(data.summary)document.getElementById('aiBody').textContent=data.summary;
-      else toast('분석 실패: '+(data.error||''));
+      if(data.summary){
+        document.getElementById('aiBody').textContent=data.summary;
+        renderNews(data.top_news);
+      }else toast('분석 실패: '+(data.error||''));
     }else{
       const m=metaOf(curDetail);
       const res=await fetch(`${SB_URL}/functions/v1/stock-summary`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:curDetail,korean_query:m.kr})});
