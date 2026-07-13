@@ -322,10 +322,26 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
           <option value="below">이하</option>
           <option value="above">이상</option>
         </select>
-        <input type="text" id="alertVal" inputmode="decimal" placeholder="예: -3, 700" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+        <input type="text" id="alertVal" inputmode="decimal" placeholder="예: -3, 700" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
       </div>
       <button class="btn-save" onclick="addPriceAlert()">추가</button>
       </div>
+
+    <div class="alert-card" id="calcCard" style="margin-top:12px;">
+      <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/></svg><span style="font-size:13px;font-weight:700;">수익률 계산기</span></div>
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        <input type="text" id="calcQty" inputmode="decimal" placeholder="보유 수량 (예: 10)" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <select id="calcKind" style="flex:0 0 auto;background:#F5F2FC;border:none;border-radius:10px;padding:9px 6px;font-size:12px;font-family:inherit;">
+          <option value="price">목표 금액</option>
+          <option value="pct">목표 등락률(%)</option>
+        </select>
+        <input type="text" id="calcVal" inputmode="decimal" placeholder="예: 700, 10" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+      </div>
+      <button class="btn-save" onclick="calcReturn()">계산하기</button>
+      <div id="calcResult"></div>
+    </div>
     </div>
   </div>
 </div>
@@ -431,6 +447,7 @@ const pct=n=>(n==null?'—':(n>0?'+':'')+n.toFixed(2)+'%');
 // ═══════════════ 네비게이션 ═══════════════
 const VIEWS=['home','detail','manage','alerts','more'];
 let curDetail=null;
+let curPrice=null;
 function nav(name,arg){
   VIEWS.forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden',v!==name));
   ['home','manage','alerts','more'].forEach(v=>{
@@ -595,6 +612,7 @@ async function loadChart(sym){
   const {data:latestRows}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(1);
   const last=(latestRows||[])[0];
   if(!last){document.getElementById('dPrice').textContent='데이터 없음';document.getElementById('chartSvg').innerHTML='';document.getElementById('barTooltip').classList.add('hidden');return;}
+  curPrice=last.price;
   document.getElementById('dPrice').textContent=priceFmt(sym,last.price);
   const arrow=last.percent_change<0?'▼':'▲';
   const chgAmt=Math.abs(last.price*(last.percent_change||0)/100);
@@ -917,13 +935,42 @@ async function loadAlerts(sym){
 async function addPriceAlert(){
   const kind=document.getElementById('alertKind').value;
   const direction=document.getElementById('alertDir').value;
-  const threshold=parseFloat(document.getElementById('alertVal').value);
+  const threshold=parseFloat(document.getElementById('alertVal').value.replace(/,/g,''));
   if(isNaN(threshold)){toast('숫자를 입력해주세요');return;}
   const {error}=await sb.from('price_alerts').insert({symbol:curDetail,kind,direction,threshold});
   if(error){toast('추가 실패');return;}
   document.getElementById('alertVal').value='';
   toast('알림 추가됐어요 ✓');
   loadAlerts(curDetail);
+}
+// 숫자 입력칸 천단위 콤마 자동 포맷 (음수·소수점 유지) — 알림 금액·수익률 계산기 공용
+function onNumInput(el){
+  const neg=el.value.trim().startsWith('-');
+  const digits=el.value.replace(/[^0-9.]/g,'');
+  const dotIdx=digits.indexOf('.');
+  let intPart=dotIdx===-1?digits:digits.slice(0,dotIdx);
+  const decPart=dotIdx===-1?'':'.'+digits.slice(dotIdx+1).replace(/\./g,'').slice(0,2);
+  intPart=intPart.replace(/^0+(?=\d)/,'');
+  const withComma=intPart?Number(intPart).toLocaleString('ko-KR'):'';
+  el.value=(neg?'-':'')+withComma+decPart;
+}
+// 수익률 계산기 — 보유 수량 + 목표 금액/등락률 → 평가금액·손익 계산 (현재가 기준, curPrice는 loadChart에서 갱신)
+function calcReturn(){
+  if(curPrice==null){toast('시세를 아직 못 불러왔어요');return;}
+  const qty=parseFloat(document.getElementById('calcQty').value.replace(/,/g,''));
+  const kind=document.getElementById('calcKind').value;
+  const val=parseFloat(document.getElementById('calcVal').value.replace(/,/g,''));
+  if(isNaN(qty)||qty<=0||isNaN(val)){toast('수량과 목표값을 입력해주세요');return;}
+  const targetPrice=kind==='pct'?curPrice*(1+val/100):val;
+  const profit=(targetPrice-curPrice)*qty;
+  const profitPct=(targetPrice-curPrice)/curPrice*100;
+  const cls=profit>=0?'up':'down';
+  const sign=profit>=0?'+':'-';
+  document.getElementById('calcResult').innerHTML=`
+    <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">목표가</span><span style="font-weight:700;">${priceFmt(curDetail,targetPrice)}</span></div>
+    <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">평가금액 (${qty}주)</span><span style="font-weight:700;">${priceFmt(curDetail,qty*targetPrice)}</span></div>
+    <div style="display:flex;justify-content:space-between;padding:9px 0 0;margin-top:4px;border-top:1px solid #F1EEF7;font-size:13px;"><span style="color:var(--ink3);">손익</span><span class="${cls}" style="font-weight:800;">${sign}${priceFmt(curDetail,Math.abs(profit))} (${sign}${Math.abs(profitPct).toFixed(2)}%)</span></div>
+  `;
 }
 async function delPriceAlert(id){
   await sb.from('price_alerts').delete().eq('id',id);

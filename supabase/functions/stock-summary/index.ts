@@ -46,49 +46,72 @@ Deno.serve(async (req) => {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-  const { data: quotes, error: quoteError } = await supabase
+  // 인기 종목은 1~5분 간격으로 폴링되므로 "최신 5개"만 보면 전부 같은 날 안의 값이라 며칠짜리
+  // 흐름을 놓친다 → 넉넉히 가져온 뒤 날짜별 마지막 값만 남겨 "일별 종가 추이"로 압축한다.
+  const { data: rawQuotes, error: quoteError } = await supabase
     .from("quote_history")
     .select("price, change, percent_change, fetched_at")
     .eq("symbol", symbol)
     .order("fetched_at", { ascending: false })
-    .limit(5);
+    .limit(300);
 
   if (quoteError) {
     return Response.json({ error: quoteError.message }, { status: 500, headers: CORS_HEADERS });
   }
 
-  // 후보군은 넉넉히 모으고(국내 15건, 해외 10건), 실제로 사용자에게 보여줄 건 Gemini가
+  const byDate = new Map<string, QuoteRow>();
+  for (const q of rawQuotes ?? []) {
+    const d = (q.fetched_at as string).slice(0, 10);
+    if (!byDate.has(d)) byDate.set(d, q as QuoteRow); // rawQuotes는 최신순 정렬이라 날짜당 처음 나오는 값이 그날의 최신값
+  }
+  const dailyQuotes = Array.from(byDate.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-10)
+    .map(([date, q]) => ({ date, price: q.price, change: q.change, percent_change: q.percent_change }));
+
+  const latestQuote: QuoteRow | undefined = (rawQuotes ?? [])[0];
+  const oldest = dailyQuotes[0];
+  const newest = dailyQuotes[dailyQuotes.length - 1];
+  const periodChangePct = oldest && newest && oldest.price
+    ? Math.round(((newest.price - oldest.price) / oldest.price) * 10000) / 100
+    : null;
+
+  // 후보군은 넉넉히 모으고(국내 20건, 해외 7일치), 실제로 사용자에게 보여줄 건 Gemini가
   // 가격 변동과 관련성 높은 국내기사 최대 3건만 골라내게 한다(해외기사는 사용자가 못 읽으므로
   // 화면에 노출하지 않고 요약 생성 참고자료로만 사용).
   const [enNews, analyst, earnings, krNews] = await Promise.all([
-    callFunction("finnhub-news", { symbol, days: 5 }).catch(() => ({ items: [] })),
+    callFunction("finnhub-news", { symbol, days: 7 }).catch(() => ({ items: [] })),
     callFunction("finnhub-analyst", { symbol }).catch(() => ({ latest_recommendation: null, price_target: null })),
     callFunction("finnhub-earnings").catch(() => ({ events: [] })),
-    korean_query ? callFunction("naver-news", { query: korean_query, display: 15 }).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+    korean_query ? callFunction("naver-news", { query: korean_query, display: 20 }).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
   ]);
 
   const earningsForSymbol = (earnings.events ?? []).filter((e: { symbol: string }) => e.symbol === symbol);
 
-  const latestQuote: QuoteRow | undefined = (quotes ?? [])[0];
-
   const prompt = `너는 개인 투자자를 위한 주식 분석 비서다. 아래 데이터만 근거로, 추측 없이 "${symbol}" 종목을 분석해라.
 
-[요약 작성 규칙]
+[핵심 원칙 — 반드시 지킬 것]
+- 사용자는 이미 화면 차트·숫자로 등락 방향과 폭을 보고 있다. "얼마 올랐다/떨어졌다"는 사실만 되풀이하는 요약은 가치가 없다. **왜 그렇게 움직였는지 원인을 설명하는 게 이 요약의 존재 이유다.**
+- 아래 [최근 일별 종가 추이]를 보고 의미 있는 변동(하루 급변 또는 기간 누적 변동 ±2% 이상)이 보이면, 국내·해외 뉴스 후보·애널리스트 코멘트·실적 이벤트를 전부 뒤져서 원인이 될 만한 사실을 최대한 찾아 연결해라.
+- 원인이 여러 개 확인되면(예: 실적 발표 반응 + 업종 전반 약세 + 애널리스트 목표가 조정 + 거시 이벤트) **하나로 뭉뚱그리지 말고 각각 따로 설명해라.**
+- 뉴스에서 뚜렷한 원인을 정말 못 찾았으면 "뉴스에서 뚜렷한 원인은 확인되지 않음"이라고 명확히 말하되, 그래도 확인되는 정황(예: 시장 전반 약세, 실적 발표 이후 반응, 목표가 변경 등)이 있으면 함께 적어라.
 - 데이터에 없는 내용은 절대 지어내지 마라.
-- 가격 변동이 있으면 수치(변동폭·변동률)를 인용하고, 뉴스에 언급된 원인이 있으면 연결해서 설명해라(국내·해외 뉴스 후보 모두 참고 가능).
-- 뉴스에 원인이 없으면 "뉴스에서 뚜렷한 원인은 확인되지 않음"이라고 명시해라.
 - 애널리스트 컨센서스·실적발표 예정일이 있으면 마지막에 짧게 덧붙여라.
-- 3~5문장, 마크다운 기호 쓰지 말 것.
+- 분량은 원인의 개수에 맞춰라 — 원인이 여러 개면 문장을 늘려서(대략 4~8문장) 전부 설명하고, 원인이 하나거나 없으면 짧게 끝내도 된다. 근거 없는 문장으로 늘리지는 마라. 마크다운 기호 쓰지 말 것.
 
 [뉴스 선별 규칙 — 중요]
 - "국내 뉴스 후보" 목록 중에서, 이 종목의 가격 변동과 실제로 관련 있는 기사만 최대 3개 골라 top_news에 넣어라(관련성 낮은 노이즈 기사는 제외).
 - top_news는 국내 뉴스 후보 중에서만 골라라 (해외 뉴스는 요약 작성에는 참고하되 top_news에는 절대 넣지 마라 — 사용자가 영어를 못 읽는다).
 - 관련성 높은 국내기사가 3개 미만이면 있는 만큼만 넣고, 하나도 없으면 빈 배열로 둬라.
 
-[최근 시세 이력 (최신순, 최대 5개)]
-${JSON.stringify(quotes ?? [], null, 2)}
+[최근 일별 종가 추이 (오래된순, 날짜당 그날 마지막 값)]
+${JSON.stringify(dailyQuotes, null, 2)}
+${periodChangePct !== null ? `→ 위 기간(${oldest.date}~${newest.date}) 누적 변동률: ${periodChangePct}%` : ""}
 
-[해외 뉴스 후보 (Finnhub, 최근 5일, 요약 참고용 — 사용자에게 노출 안 함)]
+[가장 최근 시세 원본 (현재가·직전 변동)]
+${JSON.stringify(latestQuote ?? null, null, 2)}
+
+[해외 뉴스 후보 (Finnhub, 최근 7일, 요약 참고용 — 사용자에게 노출 안 함)]
 ${JSON.stringify(enNews.items ?? [], null, 2)}
 
 [국내 뉴스 후보 (네이버, 최근순)]
@@ -127,10 +150,11 @@ ${JSON.stringify(earningsForSymbol, null, 2)}`;
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
           responseMimeType: "application/json",
           responseSchema: schema,
-          thinkingConfig: { thinkingBudget: 0 },
+          // 여러 뉴스·컨센서스·실적 이벤트를 엮어 원인을 종합해야 해서 thinkingBudget 0(즉답)은 너무 얕음 —
+          // 기본 동적 사고 예산을 쓰도록 thinkingConfig 자체를 생략(모델이 필요한 만큼 추론)
         },
       }),
     },
