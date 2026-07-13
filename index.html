@@ -226,6 +226,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 .spin{width:22px;height:22px;border:2.5px solid #E6DEF7;border-top-color:var(--purple);border-radius:50%;animation:sp .7s linear infinite;margin:20px auto;}
 @keyframes sp{to{transform:rotate(360deg);}}
+.cur-toggle{display:inline-flex;background:rgba(255,255,255,.15);border-radius:10px;padding:2px;flex:0 0 auto;}
+.cur-btn{border:none;background:transparent;color:rgba(255,255,255,.6);border-radius:8px;padding:5px 11px;font-size:12px;font-weight:800;font-family:inherit;}
+.cur-btn.on{background:#fff;color:var(--purple);}
 </style>
 </head>
 <body>
@@ -234,7 +237,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 <div id="view-home">
   <div class="header">
     <div class="header-row" style="align-items:center;">
-      <div></div>
+      <div class="cur-toggle"><button class="cur-btn on" data-cur="usd" onclick="setCur('usd')">$</button><button class="cur-btn" data-cur="krw" onclick="setCur('krw')">₩</button></div>
       <button class="bell-btn" onclick="nav('alerts')"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="bell-dot" id="bellDot"></span></button>
     </div>
     <div style="margin-top:24px;position:relative;z-index:1;">
@@ -247,15 +250,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     <div class="sec-head"><div class="sec-title">지수 · 원자재 · 코인 · 채권</div></div>
     <div id="indexBox" style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:4px;"></div>
 
-    <div class="sec-head" style="margin-top:8px;"><div class="sec-title">관심 종목</div>
-      <div style="display:flex;align-items:center;gap:9px;">
-        <div style="display:flex;background:#EDE9F7;border-radius:8px;padding:2px;" title="미국주식 표시 통화">
-          <button type="button" id="curUsd" onclick="setCur('usd')" style="border:none;background:var(--purple);color:#fff;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:800;font-family:inherit;">$</button>
-          <button type="button" id="curKrw" onclick="setCur('krw')" style="border:none;background:none;color:var(--ink3);border-radius:6px;padding:3px 9px;font-size:11px;font-weight:800;font-family:inherit;">₩</button>
-        </div>
-        <button class="sec-more" onclick="nav('manage')">전체보기</button>
-      </div>
-    </div>
+    <div class="sec-head" style="margin-top:8px;"><div class="sec-title">관심 종목</div><button class="sec-more" onclick="nav('manage')">전체보기</button></div>
     <div id="watchlistBox" style="display:grid;grid-template-columns:1fr 1fr;gap:11px;"><div class="spin"></div></div>
   </div>
 </div>
@@ -266,6 +261,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     <div class="dhead-top">
       <button class="icon-btn" onclick="history.back()"><svg viewBox="0 0 24 24" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
       <div class="dhead-right">
+        <div class="cur-toggle" id="curToggleDetail" style="display:none;margin-right:4px;"><button class="cur-btn" data-cur="usd" onclick="setCur('usd')">$</button><button class="cur-btn" data-cur="krw" onclick="setCur('krw')">₩</button></div>
         <button class="icon-btn" id="favBtn"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></button>
         <button class="icon-btn"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg></button>
       </div>
@@ -332,10 +328,6 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     <div class="alert-card" id="alertCard" style="margin-top:12px;">
       <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg><span style="font-size:13px;font-weight:700;">가격 알림</span></div>
       <div id="alertList" style="margin:10px 0;"></div>
-      <select id="alertCur" style="display:none;width:100%;background:#F5F2FC;border:none;border-radius:10px;padding:8px 10px;font-size:12px;font-family:inherit;margin-bottom:6px;">
-        <option value="usd">금액 알림: 달러 ($) 기준</option>
-        <option value="krw">금액 알림: 원 (₩) 기준 · 환율로 달러 환산 저장</option>
-      </select>
       <div style="display:flex;gap:6px;">
         <select id="alertKind" style="flex:0 0 auto;background:#F5F2FC;border:none;border-radius:10px;padding:9px 6px;font-size:12px;font-family:inherit;">
           <option value="pct">퍼센트</option>
@@ -356,10 +348,6 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
         <button type="button" id="calcTabDown" onclick="setCalcMode('down')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:var(--purple);color:#fff;">물타기 (추가매수)</button>
         <button type="button" id="calcTabUp" onclick="setCalcMode('up')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:#F5F2FC;color:var(--ink3);">불타기 (추가매수)</button>
       </div>
-      <select id="calcCur" onchange="document.getElementById('calcResult').innerHTML=''" style="display:none;width:100%;background:#F5F2FC;border:none;border-radius:10px;padding:8px 10px;font-size:12px;font-family:inherit;margin-bottom:6px;">
-        <option value="usd">달러 ($) 로 입력·표시</option>
-        <option value="krw">원 (₩) 로 입력·표시 · 현재 환율 환산</option>
-      </select>
       <div style="display:flex;gap:6px;">
         <input type="text" id="calcHoldQty" inputmode="decimal" placeholder="보유 수량" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
         <input type="text" id="calcHoldAvg" inputmode="decimal" placeholder="평균 단가" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
@@ -559,12 +547,14 @@ async function loadIndexBox(){
   }).join('');
 }
 // 미국주식 $/₩ 표시 토글 — 현재 환율로 원 환산. 관심종목 헤더의 버튼에서 호출.
+function updateCurButtons(){document.querySelectorAll('.cur-btn').forEach(b=>b.classList.toggle('on',b.dataset.cur===usdView));}
 function setCur(c){
   usdView=c;
-  const u=document.getElementById('curUsd'),k=document.getElementById('curKrw');
-  if(u&&k){u.style.background=c==='usd'?'var(--purple)':'none';u.style.color=c==='usd'?'#fff':'var(--ink3)';
-    k.style.background=c==='krw'?'var(--purple)':'none';k.style.color=c==='krw'?'#fff':'var(--ink3)';}
-  loadHome();
+  updateCurButtons();
+  if(curView==='detail'&&curDetail){ // 상세: 가격·차트·기간비교를 새 통화로 다시 그림, 계산 결과는 초기화
+    loadChart(curDetail);loadPeriodCompare(curDetail);
+    document.getElementById('calcResult').innerHTML='';
+  }else loadHome();
 }
 async function loadHome(){
   loadIndexBox();
@@ -655,11 +645,9 @@ async function openDetail(sym){
   document.getElementById('earningsCard').classList.add('hidden');
   // 애널리스트 컨센서스·실적일정은 Finnhub(미국 개별종목) 전용이라 한국종목·매크로 자산엔 카드 자체를 숨김
   document.getElementById('consensusCard').classList.toggle('hidden',isKR||isMacro);
-  // 미국주식($)이면 평단계산기·가격알림에 $/₩ 통화선택 노출(기본은 현재 홈 토글 통화). 그 외는 숨김(원/네이티브).
-  const showCur=isUsdSym(sym);
-  const cc=document.getElementById('calcCur'),ac=document.getElementById('alertCur');
-  cc.style.display=showCur?'':'none';cc.value=usdView;
-  ac.style.display=showCur?'':'none';ac.value=usdView;
+  // 미국주식($)이면 상세 헤더의 $/₩ 토글 노출(전역 usdView 공유). 그 외는 숨김(원/네이티브 통화).
+  document.getElementById('curToggleDetail').style.display=isUsdSym(sym)?'':'none';
+  updateCurButtons();
   // 매크로 자산도 macro-summary가 국내뉴스를 근거로 쓰므로 뉴스 섹션 노출(과거엔 뉴스 자체가 없어 숨겼었음)
   loadAlerts(sym);
 
@@ -1012,7 +1000,7 @@ async function addPriceAlert(){
   let threshold=parseFloat(document.getElementById('alertVal').value.replace(/,/g,''));
   if(isNaN(threshold)){toast('숫자를 입력해주세요');return;}
   // 미국주식 금액 알림을 ₩로 입력했으면 현재 환율로 달러 환산 후 저장(백엔드가 달러 시세와 비교하므로).
-  if(kind==='price'&&isUsdSym(curDetail)&&document.getElementById('alertCur').value==='krw'){
+  if(kind==='price'&&isUsdSym(curDetail)&&usdView==='krw'){
     if(!FX){toast('환율을 아직 못 불러왔어요');return;}
     threshold=threshold/FX;
   }
@@ -1044,9 +1032,9 @@ function setCalcMode(m){
   document.getElementById('calcResult').innerHTML='';
 }
 function calcAverage(){
-  // 통화: 미국주식이면 calcCur 선택($/₩), 그 외(한국주식 등)는 원래 통화. ₩ 모드면 현재가를 환율로 원 환산해 계산.
+  // 통화: 미국주식이면 전역 usdView($/₩) 따름, 그 외(한국주식 등)는 원래 통화. ₩ 모드면 현재가를 환율로 원 환산해 계산.
   const usd=isUsdSym(curDetail);
-  const cur=usd?document.getElementById('calcCur').value:'krw';
+  const cur=usd?usdView:'krw';
   if(usd&&cur==='krw'&&!FX){toast('환율을 아직 못 불러왔어요');return;}
   const curPriceC=(usd&&cur==='krw')?(curPrice==null?null:curPrice*FX):curPrice;
   const cfmt=(v)=>usd?(cur==='usd'?'$'+Math.abs(v).toLocaleString('ko-KR',{maximumFractionDigits:2}):Math.abs(v).toLocaleString('ko-KR',{maximumFractionDigits:0})+'원'):priceFmt(curDetail,v);
