@@ -449,8 +449,11 @@ const won=(n,c)=>{if(n==null)return'—';const s=Math.abs(n).toLocaleString('ko-
 // 한국 종목(.KS/.KQ)·원화 표시 자산은 "원", 채권은 "%", 지수는 단위 없이, 그 외(미국종목·원자재)는 "$"
 const priceFmt=(sym,n)=>{
   if(n==null)return'—';
-  const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:2});
-  if(/\.(KS|KQ)$/.test(sym)||sym==='USD_KRW'||sym==='BTC_KRW')return s+'원';
+  const isKRstock=/\.(KS|KQ)$/.test(sym);
+  // 한국주식·비트코인(원)은 소수점 없이 정수로. 환율(USD_KRW)·지수·미국주식은 소수 2자리 유지.
+  const digits=(isKRstock||sym==='BTC_KRW')?0:2;
+  const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:digits});
+  if(isKRstock||sym==='USD_KRW'||sym==='BTC_KRW')return s+'원';
   if(sym==='KR_BOND_3Y')return s+'%';
   if(sym==='KOSPI'||sym==='KOSDAQ')return s;
   return '$'+s;
