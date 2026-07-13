@@ -247,7 +247,15 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     <div class="sec-head"><div class="sec-title">지수 · 원자재 · 코인 · 채권</div></div>
     <div id="indexBox" style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:4px;"></div>
 
-    <div class="sec-head" style="margin-top:8px;"><div class="sec-title">관심 종목</div><button class="sec-more" onclick="nav('manage')">전체보기</button></div>
+    <div class="sec-head" style="margin-top:8px;"><div class="sec-title">관심 종목</div>
+      <div style="display:flex;align-items:center;gap:9px;">
+        <div style="display:flex;background:#EDE9F7;border-radius:8px;padding:2px;" title="미국주식 표시 통화">
+          <button type="button" id="curUsd" onclick="setCur('usd')" style="border:none;background:var(--purple);color:#fff;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:800;font-family:inherit;">$</button>
+          <button type="button" id="curKrw" onclick="setCur('krw')" style="border:none;background:none;color:var(--ink3);border-radius:6px;padding:3px 9px;font-size:11px;font-weight:800;font-family:inherit;">₩</button>
+        </div>
+        <button class="sec-more" onclick="nav('manage')">전체보기</button>
+      </div>
+    </div>
     <div id="watchlistBox" style="display:grid;grid-template-columns:1fr 1fr;gap:11px;"><div class="spin"></div></div>
   </div>
 </div>
@@ -324,6 +332,10 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     <div class="alert-card" id="alertCard" style="margin-top:12px;">
       <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg><span style="font-size:13px;font-weight:700;">가격 알림</span></div>
       <div id="alertList" style="margin:10px 0;"></div>
+      <select id="alertCur" style="display:none;width:100%;background:#F5F2FC;border:none;border-radius:10px;padding:8px 10px;font-size:12px;font-family:inherit;margin-bottom:6px;">
+        <option value="usd">금액 알림: 달러 ($) 기준</option>
+        <option value="krw">금액 알림: 원 (₩) 기준 · 환율로 달러 환산 저장</option>
+      </select>
       <div style="display:flex;gap:6px;">
         <select id="alertKind" style="flex:0 0 auto;background:#F5F2FC;border:none;border-radius:10px;padding:9px 6px;font-size:12px;font-family:inherit;">
           <option value="pct">퍼센트</option>
@@ -344,6 +356,10 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
         <button type="button" id="calcTabDown" onclick="setCalcMode('down')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:var(--purple);color:#fff;">물타기 (추가매수)</button>
         <button type="button" id="calcTabUp" onclick="setCalcMode('up')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:#F5F2FC;color:var(--ink3);">불타기 (추가매수)</button>
       </div>
+      <select id="calcCur" onchange="document.getElementById('calcResult').innerHTML=''" style="display:none;width:100%;background:#F5F2FC;border:none;border-radius:10px;padding:8px 10px;font-size:12px;font-family:inherit;margin-bottom:6px;">
+        <option value="usd">달러 ($) 로 입력·표시</option>
+        <option value="krw">원 (₩) 로 입력·표시 · 현재 환율 환산</option>
+      </select>
       <div style="display:flex;gap:6px;">
         <input type="text" id="calcHoldQty" inputmode="decimal" placeholder="보유 수량" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
         <input type="text" id="calcHoldAvg" inputmode="decimal" placeholder="평균 단가" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
@@ -447,8 +463,13 @@ const STOCK_META={
 function metaOf(sym){return STOCK_META[sym]||{name:sym,color:'#7C3AED',initial:sym[0]||'?',kr:sym};}
 const won=(n,c)=>{if(n==null)return'—';const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:2});return (c||'$')+s;};
 // 한국 종목(.KS/.KQ)·원화 표시 자산은 "원", 채권은 "%", 지수는 단위 없이, 그 외(미국종목·원자재)는 "$"
+// 미국 달러 표시 심볼 판별(한국주식·원화·지수·채권 제외 = 달러로 표시되는 것). 미국개별주식·QQQ 등.
+const isUsdSym=(sym)=>!(/\.(KS|KQ)$/.test(sym)||sym==='USD_KRW'||sym==='BTC_KRW'||sym==='KR_BOND_3Y'||sym==='KOSPI'||sym==='KOSDAQ');
+let usdView='usd',FX=null; // 미국주식 표시통화 토글('usd'|'krw'), FX=현재 USD/원 환율
 const priceFmt=(sym,n)=>{
   if(n==null)return'—';
+  // 미국주식(달러)인데 '원 보기' 모드면 현재 환율로 원 환산해서 표시
+  if(isUsdSym(sym)&&usdView==='krw'&&FX)return Math.abs(n*FX).toLocaleString('ko-KR',{maximumFractionDigits:0})+'원';
   const isKRstock=/\.(KS|KQ)$/.test(sym);
   // 한국주식·비트코인(원)은 소수점 없이 정수로. 환율(USD_KRW)·지수·미국주식은 소수 2자리 유지.
   const digits=(isKRstock||sym==='BTC_KRW')?0:2;
@@ -537,8 +558,19 @@ async function loadIndexBox(){
       <div class="idx-chg ${cls}">${q&&q.percent_change!=null?arrow+' '+Math.abs(q.percent_change).toFixed(2)+'%':'—'}</div></div>`;
   }).join('');
 }
+// 미국주식 $/₩ 표시 토글 — 현재 환율로 원 환산. 관심종목 헤더의 버튼에서 호출.
+function setCur(c){
+  usdView=c;
+  const u=document.getElementById('curUsd'),k=document.getElementById('curKrw');
+  if(u&&k){u.style.background=c==='usd'?'var(--purple)':'none';u.style.color=c==='usd'?'#fff':'var(--ink3)';
+    k.style.background=c==='krw'?'var(--purple)':'none';k.style.color=c==='krw'?'#fff':'var(--ink3)';}
+  loadHome();
+}
 async function loadHome(){
   loadIndexBox();
+  // 미국주식 원 환산용 현재 환율 확보(USD_KRW 최신)
+  const {data:fxRows}=await sb.from('quote_history').select('price').eq('symbol','USD_KRW').order('fetched_at',{ascending:false}).limit(1);
+  if(fxRows&&fxRows[0])FX=fxRows[0].price;
   const {data:wlRaw,error} = await sb.from('watchlist').select('*').order('sort_order',{ascending:true});
   if(error||!wlRaw){document.getElementById('watchlistBox').innerHTML='<div class="empty-box">불러오기 실패</div>';return;}
   const wl=wlRaw.filter(w=>!INDEX_SYMBOLS.includes(w.symbol));
@@ -623,6 +655,11 @@ async function openDetail(sym){
   document.getElementById('earningsCard').classList.add('hidden');
   // 애널리스트 컨센서스·실적일정은 Finnhub(미국 개별종목) 전용이라 한국종목·매크로 자산엔 카드 자체를 숨김
   document.getElementById('consensusCard').classList.toggle('hidden',isKR||isMacro);
+  // 미국주식($)이면 평단계산기·가격알림에 $/₩ 통화선택 노출(기본은 현재 홈 토글 통화). 그 외는 숨김(원/네이티브).
+  const showCur=isUsdSym(sym);
+  const cc=document.getElementById('calcCur'),ac=document.getElementById('alertCur');
+  cc.style.display=showCur?'':'none';cc.value=usdView;
+  ac.style.display=showCur?'':'none';ac.value=usdView;
   // 매크로 자산도 macro-summary가 국내뉴스를 근거로 쓰므로 뉴스 섹션 노출(과거엔 뉴스 자체가 없어 숨겼었음)
   loadAlerts(sym);
 
@@ -972,8 +1009,13 @@ async function loadAlerts(sym){
 async function addPriceAlert(){
   const kind=document.getElementById('alertKind').value;
   const direction=document.getElementById('alertDir').value;
-  const threshold=parseFloat(document.getElementById('alertVal').value.replace(/,/g,''));
+  let threshold=parseFloat(document.getElementById('alertVal').value.replace(/,/g,''));
   if(isNaN(threshold)){toast('숫자를 입력해주세요');return;}
+  // 미국주식 금액 알림을 ₩로 입력했으면 현재 환율로 달러 환산 후 저장(백엔드가 달러 시세와 비교하므로).
+  if(kind==='price'&&isUsdSym(curDetail)&&document.getElementById('alertCur').value==='krw'){
+    if(!FX){toast('환율을 아직 못 불러왔어요');return;}
+    threshold=threshold/FX;
+  }
   const {error}=await sb.from('price_alerts').insert({symbol:curDetail,kind,direction,threshold});
   if(error){toast('추가 실패');return;}
   document.getElementById('alertVal').value='';
@@ -1002,11 +1044,17 @@ function setCalcMode(m){
   document.getElementById('calcResult').innerHTML='';
 }
 function calcAverage(){
+  // 통화: 미국주식이면 calcCur 선택($/₩), 그 외(한국주식 등)는 원래 통화. ₩ 모드면 현재가를 환율로 원 환산해 계산.
+  const usd=isUsdSym(curDetail);
+  const cur=usd?document.getElementById('calcCur').value:'krw';
+  if(usd&&cur==='krw'&&!FX){toast('환율을 아직 못 불러왔어요');return;}
+  const curPriceC=(usd&&cur==='krw')?(curPrice==null?null:curPrice*FX):curPrice;
+  const cfmt=(v)=>usd?(cur==='usd'?'$'+Math.abs(v).toLocaleString('ko-KR',{maximumFractionDigits:2}):Math.abs(v).toLocaleString('ko-KR',{maximumFractionDigits:0})+'원'):priceFmt(curDetail,v);
   const holdQty=parseFloat((document.getElementById('calcHoldQty').value||'').replace(/,/g,''));
   const holdAvg=parseFloat((document.getElementById('calcHoldAvg').value||'').replace(/,/g,''));
   const addQty=parseFloat((document.getElementById('calcAddQty').value||'').replace(/,/g,''));
   let addPrice=parseFloat((document.getElementById('calcAddPrice').value||'').replace(/,/g,''));
-  if(isNaN(addPrice))addPrice=curPrice; // 매수가 비우면 현재가 사용
+  if(isNaN(addPrice))addPrice=curPriceC; // 매수가 비우면 현재가(선택 통화 기준)
   if(isNaN(holdQty)||holdQty<=0||isNaN(holdAvg)||holdAvg<=0||isNaN(addQty)||addQty<=0){toast('보유수량·평균단가·추가수량을 입력해주세요');return;}
   if(addPrice==null||isNaN(addPrice)){toast('매수가를 입력하거나 시세를 기다려주세요');return;}
   const totalQty=holdQty+addQty;
@@ -1014,29 +1062,28 @@ function calcAverage(){
   const addCost=addQty*addPrice;
   const modeWarn=calcMode==='down'&&addPrice>=holdAvg?'※ 물타기인데 매수가가 평단 이상이라 평단이 안 내려가요'
                 :calcMode==='up'&&addPrice<=holdAvg?'※ 불타기인데 매수가가 평단 이하라 평단이 안 올라가요':'';
-  // "현재 평균 → 예상 평균"을 각각 (현재가 기준 수익률% + 평단금액)으로 나란히 — 물타기 후 평단·수익률이 어떻게 바뀌는지 직관적으로.
+  // "현재 평균 → 예상 평균"을 각각 (현재가 기준 수익률% + 평단금액)으로 나란히
   const fmtPct=(p)=>{const c=p>=0?'up':'down';const s=p>=0?'+':'';return`<span class="${c}" style="font-weight:800;font-size:20px;">${s}${p.toFixed(1)}%</span>`;};
   const col=(title,pctHtml,priceStr)=>`<div style="flex:1;text-align:center;"><div style="font-size:11.5px;color:var(--ink3);margin-bottom:5px;">${title}</div>${pctHtml}<div style="font-size:13px;font-weight:700;margin-top:3px;">${priceStr}</div></div>`;
   let card;
-  if(curPrice!=null){
-    const curPct=(curPrice-holdAvg)/holdAvg*100;
-    const newPct=(curPrice-newAvg)/newAvg*100;
+  if(curPriceC!=null){
+    const curPct=(curPriceC-holdAvg)/holdAvg*100;
+    const newPct=(curPriceC-newAvg)/newAvg*100;
     card=`<div style="display:flex;align-items:center;gap:8px;background:#F7F5FC;border-radius:14px;padding:15px 12px;margin-top:6px;">
-      ${col('현재 평균',fmtPct(curPct),priceFmt(curDetail,holdAvg))}
+      ${col('현재 평균',fmtPct(curPct),cfmt(holdAvg))}
       <div style="color:var(--ink3);font-size:18px;flex:0 0 auto;">→</div>
-      ${col('예상 평균',fmtPct(newPct),priceFmt(curDetail,newAvg))}
+      ${col('예상 평균',fmtPct(newPct),cfmt(newAvg))}
     </div>`;
   }else{
-    // 현재가 못 불러온 경우: 수익률 없이 평단만 before→after
     card=`<div style="display:flex;align-items:center;gap:8px;background:#F7F5FC;border-radius:14px;padding:15px 12px;margin-top:6px;">
-      ${col('현재 평단','',priceFmt(curDetail,holdAvg))}
+      ${col('현재 평단','',cfmt(holdAvg))}
       <div style="color:var(--ink3);font-size:18px;flex:0 0 auto;">→</div>
-      ${col('예상 평단','',priceFmt(curDetail,newAvg))}
+      ${col('예상 평단','',cfmt(newAvg))}
     </div>`;
   }
   document.getElementById('calcResult').innerHTML=`
     <div style="font-size:13px;color:var(--ink2);margin:12px 0 2px;text-align:center;line-height:1.55;">
-      <b>${priceFmt(curDetail,addPrice)}</b>으로 <b>${addQty.toLocaleString('ko-KR')}주</b> 더 사면<br>총 매수 <b>${priceFmt(curDetail,addCost)}</b> · 합계 보유 <b>${totalQty.toLocaleString('ko-KR')}주</b>
+      <b>${cfmt(addPrice)}</b>으로 <b>${addQty.toLocaleString('ko-KR')}주</b> 더 사면<br>총 매수 <b>${cfmt(addCost)}</b> · 합계 보유 <b>${totalQty.toLocaleString('ko-KR')}주</b>
     </div>
     ${card}
     ${modeWarn?`<div style="font-size:11.5px;color:var(--ink3);margin-top:8px;text-align:center;">${modeWarn}</div>`:''}
