@@ -339,18 +339,20 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
       </div>
 
     <div class="alert-card" id="calcCard" style="margin-top:12px;">
-      <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/></svg><span style="font-size:13px;font-weight:700;">수익률 계산기</span></div>
-      <div style="display:flex;gap:6px;margin-top:10px;">
-        <input type="text" id="calcQty" inputmode="decimal" placeholder="보유 수량 (예: 10)" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+      <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/></svg><span style="font-size:13px;font-weight:700;">평단 계산기</span></div>
+      <div style="display:flex;gap:6px;margin:10px 0;">
+        <button type="button" id="calcTabDown" onclick="setCalcMode('down')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:var(--purple);color:#fff;">물타기 (추가매수)</button>
+        <button type="button" id="calcTabUp" onclick="setCalcMode('up')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:#F5F2FC;color:var(--ink3);">불타기 (추가매수)</button>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <input type="text" id="calcHoldQty" inputmode="decimal" placeholder="보유 수량" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+        <input type="text" id="calcHoldAvg" inputmode="decimal" placeholder="평균 단가" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
       </div>
       <div style="display:flex;gap:6px;margin-top:6px;">
-        <select id="calcKind" style="flex:0 0 auto;background:#F5F2FC;border:none;border-radius:10px;padding:9px 6px;font-size:12px;font-family:inherit;">
-          <option value="price">목표 금액</option>
-          <option value="pct">목표 등락률(%)</option>
-        </select>
-        <input type="text" id="calcVal" inputmode="decimal" placeholder="예: 700, 10" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+        <input type="text" id="calcAddQty" inputmode="decimal" placeholder="추가 매수 수량" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+        <input type="text" id="calcAddPrice" inputmode="decimal" placeholder="매수가 (비우면 현재가)" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
       </div>
-      <button class="btn-save" onclick="calcReturn()">계산하기</button>
+      <button class="btn-save" onclick="calcAverage()">계산하기</button>
       <div id="calcResult"></div>
     </div>
     </div>
@@ -539,14 +541,16 @@ async function loadHome(){
   const wl=wlRaw.filter(w=>!INDEX_SYMBOLS.includes(w.symbol));
   if(!wl.length){document.getElementById('watchlistBox').innerHTML='<div class="empty-box">워치리스트가 비어있어요. 관리 탭에서 추가해보세요.</div>';return;}
 
-  const symbols=wl.map(w=>w.symbol);
-  const {data:qh}=await sb.from('quote_history').select('*').in('symbol',symbols).order('fetched_at',{ascending:false}).limit(symbols.length*30);
+  // 종목별로 각각 최신 30개 조회 — 한 쿼리(.in+limit)로 묶으면 1분마다 쌓이는 미국종목이 최근 행을
+  // 독식해서, 장마감 후 갱신이 멈추는 한국종목(장중에만 시세)의 최신 행이 밀려나 "—"로 보이던 버그.
   const latest={},series={};
-  (qh||[]).forEach(q=>{
-    if(!latest[q.symbol])latest[q.symbol]=q;
-    (series[q.symbol]=series[q.symbol]||[]).push(q);
+  const qhResults=await Promise.all(wl.map(w=>
+    sb.from('quote_history').select('*').eq('symbol',w.symbol).order('fetched_at',{ascending:false}).limit(30)
+  ));
+  wl.forEach((w,i)=>{
+    const rows=(qhResults[i]&&qhResults[i].data)||[];
+    if(rows.length){latest[w.symbol]=rows[0];series[w.symbol]=rows.slice().reverse();}
   });
-  Object.keys(series).forEach(s=>series[s].reverse());
 
   let up=0,down=0,latestTime=null,pctSum=0,pctCount=0;
   const html=wl.map(w=>{
@@ -984,22 +988,44 @@ function onNumInput(el){
   const withComma=intPart?Number(intPart).toLocaleString('ko-KR'):'';
   el.value=(neg?'-':'')+withComma+decPart;
 }
-// 수익률 계산기 — 보유 수량 + 목표 금액/등락률 → 평가금액·손익 계산 (현재가 기준, curPrice는 loadChart에서 갱신)
-function calcReturn(){
-  if(curPrice==null){toast('시세를 아직 못 불러왔어요');return;}
-  const qty=parseFloat(document.getElementById('calcQty').value.replace(/,/g,''));
-  const kind=document.getElementById('calcKind').value;
-  const val=parseFloat(document.getElementById('calcVal').value.replace(/,/g,''));
-  if(isNaN(qty)||qty<=0||isNaN(val)){toast('수량과 목표값을 입력해주세요');return;}
-  const targetPrice=kind==='pct'?curPrice*(1+val/100):val;
-  const profit=(targetPrice-curPrice)*qty;
-  const profitPct=(targetPrice-curPrice)/curPrice*100;
-  const cls=profit>=0?'up':'down';
-  const sign=profit>=0?'+':'-';
+// 평단 계산기 — 물타기(추가매수로 평단 낮추기)/불타기(추가매수로 평단 올리기) 두 모드.
+// 계산식은 동일(가중평균): 새 평단 = (보유수량×평단 + 추가수량×매수가) / (보유+추가). 모드는 안내·검증만 다름.
+let calcMode='down'; // down=물타기, up=불타기
+function setCalcMode(m){
+  calcMode=m;
+  const down=document.getElementById('calcTabDown'),up=document.getElementById('calcTabUp');
+  down.style.background=m==='down'?'var(--purple)':'#F5F2FC';down.style.color=m==='down'?'#fff':'var(--ink3)';
+  up.style.background=m==='up'?'var(--purple)':'#F5F2FC';up.style.color=m==='up'?'#fff':'var(--ink3)';
+  document.getElementById('calcResult').innerHTML='';
+}
+function calcAverage(){
+  const holdQty=parseFloat((document.getElementById('calcHoldQty').value||'').replace(/,/g,''));
+  const holdAvg=parseFloat((document.getElementById('calcHoldAvg').value||'').replace(/,/g,''));
+  const addQty=parseFloat((document.getElementById('calcAddQty').value||'').replace(/,/g,''));
+  let addPrice=parseFloat((document.getElementById('calcAddPrice').value||'').replace(/,/g,''));
+  if(isNaN(addPrice))addPrice=curPrice; // 매수가 비우면 현재가 사용
+  if(isNaN(holdQty)||holdQty<=0||isNaN(holdAvg)||holdAvg<=0||isNaN(addQty)||addQty<=0){toast('보유수량·평균단가·추가수량을 입력해주세요');return;}
+  if(addPrice==null||isNaN(addPrice)){toast('매수가를 입력하거나 시세를 기다려주세요');return;}
+  const totalQty=holdQty+addQty;
+  const newAvg=(holdQty*holdAvg+addQty*addPrice)/totalQty;
+  const avgDiff=newAvg-holdAvg;
+  const avgDiffPct=avgDiff/holdAvg*100;
+  const totalCost=holdQty*holdAvg+addQty*addPrice;
+  const modeWarn=calcMode==='down'&&addPrice>=holdAvg?'※ 물타기인데 매수가가 평단 이상이라 평단이 안 내려가요'
+                :calcMode==='up'&&addPrice<=holdAvg?'※ 불타기인데 매수가가 평단 이하라 평단이 안 올라가요':'';
+  let plRow='';
+  if(curPrice!=null){
+    const pl=(curPrice-newAvg)*totalQty;const plPct=(curPrice-newAvg)/newAvg*100;
+    const cls=pl>=0?'up':'down';const sg=pl>=0?'+':'-';
+    plRow=`<div style="display:flex;justify-content:space-between;padding:9px 0 0;margin-top:4px;border-top:1px solid #F1EEF7;font-size:13px;"><span style="color:var(--ink3);">현재가 대비 평가손익</span><span class="${cls}" style="font-weight:800;">${sg}${priceFmt(curDetail,Math.abs(pl))} (${sg}${Math.abs(plPct).toFixed(2)}%)</span></div>`;
+  }
+  const diffCls=avgDiff<=0?'down':'up';const diffSign=avgDiff>=0?'+':'-';
   document.getElementById('calcResult').innerHTML=`
-    <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">목표가</span><span style="font-weight:700;">${priceFmt(curDetail,targetPrice)}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">평가금액 (${qty}주)</span><span style="font-weight:700;">${priceFmt(curDetail,qty*targetPrice)}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:9px 0 0;margin-top:4px;border-top:1px solid #F1EEF7;font-size:13px;"><span style="color:var(--ink3);">손익</span><span class="${cls}" style="font-weight:800;">${sign}${priceFmt(curDetail,Math.abs(profit))} (${sign}${Math.abs(profitPct).toFixed(2)}%)</span></div>
+    <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">새 평균 단가</span><span style="font-weight:800;">${priceFmt(curDetail,newAvg)}</span></div>
+    <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">평단 변화</span><span class="${diffCls}" style="font-weight:700;">${diffSign}${priceFmt(curDetail,Math.abs(avgDiff))} (${diffSign}${Math.abs(avgDiffPct).toFixed(2)}%)</span></div>
+    <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">총 수량 / 총 매입금</span><span style="font-weight:700;">${totalQty.toLocaleString('ko-KR')}주 / ${priceFmt(curDetail,totalCost)}</span></div>
+    ${plRow}
+    ${modeWarn?`<div style="font-size:11.5px;color:var(--ink3);margin-top:8px;">${modeWarn}</div>`:''}
   `;
 }
 async function delPriceAlert(id){
