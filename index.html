@@ -256,7 +256,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 <div id="view-detail" class="hidden">
   <div class="header">
     <div class="dhead-top">
-      <button class="icon-btn" onclick="nav('home')"><svg viewBox="0 0 24 24" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <button class="icon-btn" onclick="history.back()"><svg viewBox="0 0 24 24" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
       <div class="dhead-right">
         <button class="icon-btn" id="favBtn"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></button>
         <button class="icon-btn"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg></button>
@@ -459,7 +459,8 @@ const pct=n=>(n==null?'—':(n>0?'+':'')+n.toFixed(2)+'%');
 const VIEWS=['home','detail','manage','alerts','more'];
 let curDetail=null;
 let curPrice=null;
-function nav(name,arg){
+let curView='home';
+function nav(name,arg,fromPop){
   VIEWS.forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden',v!==name));
   ['home','manage','alerts','more'].forEach(v=>{
     const el=document.getElementById('tb-'+v);
@@ -471,7 +472,17 @@ function nav(name,arg){
   if(name==='more')loadMoreSettings();
   if(name==='detail'&&arg)openDetail(arg);
   window.scrollTo(0,0);
+  // 뒤로가기(하드웨어/제스처)로 이전 뷰 복귀 — 종목 상세에서 뒤로 누르면 앱 닫히던 것 방지.
+  // 뷰 진입 시 history 항목 push, 뒤로가기(popstate) 땐 push 없이 그 뷰로 복원.
+  if(!fromPop && name!==curView){
+    history.pushState({view:name,arg:arg||null},'');
+  }
+  curView=name;
 }
+window.addEventListener('popstate',e=>{
+  const s=e.state;
+  nav(s&&s.view?s.view:'home', s&&s.arg?s.arg:null, true);
+});
 let tTimer;
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(tTimer);tTimer=setTimeout(()=>el.classList.remove('show'),2200);}
 
@@ -1141,6 +1152,7 @@ function saveConfig(){
 }
 
 // ═══════════════ 시작 ═══════════════
+history.replaceState({view:'home'},''); // 홈을 뒤로가기 스택의 베이스로
 loadHome();
 </script>
 </body>
