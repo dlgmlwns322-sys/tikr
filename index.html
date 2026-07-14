@@ -353,8 +353,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     <div class="alert-card" id="calcCard" style="margin-top:12px;">
       <div class="alert-top"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/></svg><span style="font-size:13px;font-weight:700;">평단 계산기</span></div>
       <div style="display:flex;gap:6px;margin:10px 0;">
-        <button type="button" id="calcTabDown" onclick="setCalcMode('down')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:var(--purple);color:#fff;">물타기 (추가매수)</button>
-        <button type="button" id="calcTabUp" onclick="setCalcMode('up')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:#F5F2FC;color:var(--ink3);">불타기 (추가매수)</button>
+        <button type="button" id="calcTabDown" onclick="setCalcMode('down')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:var(--purple);color:#fff;">물타기</button>
+        <button type="button" id="calcTabUp" onclick="setCalcMode('up')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:#F5F2FC;color:var(--ink3);">불타기</button>
+        <button type="button" id="calcTabTarget" onclick="setCalcMode('target')" style="flex:1;border:none;border-radius:10px;padding:9px 0;font-size:12.5px;font-weight:700;font-family:inherit;background:#F5F2FC;color:var(--ink3);">목표평단</button>
       </div>
       <div style="display:flex;gap:6px;">
         <input type="text" id="calcHoldQty" inputmode="decimal" placeholder="보유 수량" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
@@ -362,6 +363,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
       </div>
       <div style="display:flex;gap:6px;margin-top:6px;">
         <input type="text" id="calcAddQty" inputmode="decimal" placeholder="추가 매수 수량" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
+        <input type="text" id="calcTargetAvg" inputmode="decimal" placeholder="목표 평단" oninput="onNumInput(this)" style="display:none;flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
         <input type="text" id="calcAddPrice" inputmode="decimal" placeholder="매수가 (비우면 현재가)" oninput="onNumInput(this)" style="flex:1;min-width:0;width:0;background:#F5F2FC;border:none;border-radius:10px;padding:9px 10px;font-size:13px;font-family:inherit;"/>
       </div>
       <button class="btn-save" onclick="calcAverage()">계산하기</button>
@@ -1058,14 +1060,18 @@ function onNumInput(el){
   const withComma=intPart?Number(intPart).toLocaleString('ko-KR'):'';
   el.value=(neg?'-':'')+withComma+decPart;
 }
-// 평단 계산기 — 물타기(추가매수로 평단 낮추기)/불타기(추가매수로 평단 올리기) 두 모드.
-// 계산식은 동일(가중평균): 새 평단 = (보유수량×평단 + 추가수량×매수가) / (보유+추가). 모드는 안내·검증만 다름.
-let calcMode='down'; // down=물타기, up=불타기
+// 평단 계산기 — 물타기(추가매수로 평단 낮추기)/불타기(추가매수로 평단 올리기)/목표평단(목표 평단에 필요한 수량 역산) 세 모드.
+// 물타기·불타기 계산식(가중평균): 새 평단 = (보유수량×평단 + 추가수량×매수가) / (보유+추가).
+// 목표평단은 이 식을 추가수량 기준으로 역산: 추가수량 = 보유수량×(평단−목표평단) / (목표평단−매수가)
+let calcMode='down'; // down=물타기, up=불타기, target=목표평단
 function setCalcMode(m){
   calcMode=m;
-  const down=document.getElementById('calcTabDown'),up=document.getElementById('calcTabUp');
+  const down=document.getElementById('calcTabDown'),up=document.getElementById('calcTabUp'),target=document.getElementById('calcTabTarget');
   down.style.background=m==='down'?'var(--purple)':'#F5F2FC';down.style.color=m==='down'?'#fff':'var(--ink3)';
   up.style.background=m==='up'?'var(--purple)':'#F5F2FC';up.style.color=m==='up'?'#fff':'var(--ink3)';
+  target.style.background=m==='target'?'var(--purple)':'#F5F2FC';target.style.color=m==='target'?'#fff':'var(--ink3)';
+  document.getElementById('calcAddQty').style.display=m==='target'?'none':'';
+  document.getElementById('calcTargetAvg').style.display=m==='target'?'':'none';
   document.getElementById('calcResult').innerHTML='';
 }
 function calcAverage(){
@@ -1077,11 +1083,24 @@ function calcAverage(){
   const cfmt=(v)=>usd?(cur==='usd'?'$'+Math.abs(v).toLocaleString('ko-KR',{maximumFractionDigits:2}):Math.abs(v).toLocaleString('ko-KR',{maximumFractionDigits:0})+'원'):priceFmt(curDetail,v);
   const holdQty=parseFloat((document.getElementById('calcHoldQty').value||'').replace(/,/g,''));
   const holdAvg=parseFloat((document.getElementById('calcHoldAvg').value||'').replace(/,/g,''));
-  const addQty=parseFloat((document.getElementById('calcAddQty').value||'').replace(/,/g,''));
   let addPrice=parseFloat((document.getElementById('calcAddPrice').value||'').replace(/,/g,''));
   if(isNaN(addPrice))addPrice=curPriceC; // 매수가 비우면 현재가(선택 통화 기준)
-  if(isNaN(holdQty)||holdQty<=0||isNaN(holdAvg)||holdAvg<=0||isNaN(addQty)||addQty<=0){toast('보유수량·평균단가·추가수량을 입력해주세요');return;}
+  if(isNaN(holdQty)||holdQty<=0||isNaN(holdAvg)||holdAvg<=0){toast('보유수량·평균단가를 입력해주세요');return;}
   if(addPrice==null||isNaN(addPrice)){toast('매수가를 입력하거나 시세를 기다려주세요');return;}
+  let addQty;
+  if(calcMode==='target'){
+    const targetAvg=parseFloat((document.getElementById('calcTargetAvg').value||'').replace(/,/g,''));
+    if(isNaN(targetAvg)||targetAvg<=0){toast('목표 평단을 입력해주세요');return;}
+    if(targetAvg===holdAvg){toast('목표 평단이 현재 평단과 같아요');return;}
+    const denom=targetAvg-addPrice;
+    if(denom===0){toast('매수가와 목표 평단이 같으면 계산할 수 없어요');return;}
+    addQty=holdQty*(holdAvg-targetAvg)/denom;
+    if(!isFinite(addQty)||addQty<=0){toast(`매수가 ${cfmt(addPrice)}로는 목표 평단 ${cfmt(targetAvg)}에 도달할 수 없어요 (평단은 항상 현재평단과 매수가 사이 값이 돼요)`);return;}
+    addQty=Math.ceil(addQty);
+  }else{
+    addQty=parseFloat((document.getElementById('calcAddQty').value||'').replace(/,/g,''));
+    if(isNaN(addQty)||addQty<=0){toast('추가 매수 수량을 입력해주세요');return;}
+  }
   const totalQty=holdQty+addQty;
   const newAvg=(holdQty*holdAvg+addQty*addPrice)/totalQty;
   const addCost=addQty*addPrice;
