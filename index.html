@@ -72,7 +72,7 @@ body{background:var(--canvas);color:var(--ink);font-family:'Noto Sans KR',sans-s
 /* 홈 그리드 카드 (레이아웃 B) */
 .gcard{background:var(--card);border-radius:22px;padding:17px;box-shadow:var(--card-shadow);}
 .gcard-top{display:flex;justify-content:space-between;align-items:center;}
-.gcard-logo{width:36px;height:36px;border-radius:13px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;flex-shrink:0;}
+.gcard-logo{width:36px;height:36px;border-radius:13px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;flex-shrink:0;position:relative;overflow:hidden;}
 .gcard-badge{font-size:11px;font-weight:800;padding:4px 9px;border-radius:20px;}
 .gcard-badge.up{background:var(--up);color:#fff;}
 .gcard-badge.down{background:var(--down);color:#fff;}
@@ -118,7 +118,7 @@ body{background:var(--canvas);color:var(--ink);font-family:'Noto Sans KR',sans-s
 .icon-btn svg{width:18px;height:18px;stroke:#fff;fill:none;}
 .dhead-right{display:flex;gap:8px;}
 .dstock-row{display:flex;align-items:center;gap:12px;margin-top:16px;position:relative;z-index:1;}
-.dlogo{width:50px;height:50px;border-radius:17px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:18px;flex-shrink:0;}
+.dlogo{width:50px;height:50px;border-radius:17px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:18px;flex-shrink:0;position:relative;overflow:hidden;}
 .dticker{font-size:22px;font-weight:800;color:#fff;}
 .dname{font-size:13px;color:rgba(255,255,255,.85);}
 .dprice-row{display:flex;align-items:baseline;gap:10px;margin-top:14px;position:relative;z-index:1;}
@@ -188,7 +188,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 .add-btn svg{width:20px;height:20px;stroke:var(--purple);}
 .manage-row{background:var(--card);border-radius:20px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;box-shadow:var(--card-shadow);}
 .drag-handle{color:var(--ink4);font-size:18px;cursor:grab;padding:4px;flex-shrink:0;user-select:none;}
-.m-logo{width:36px;height:36px;border-radius:11px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;flex-shrink:0;}
+.m-logo{width:36px;height:36px;border-radius:11px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;flex-shrink:0;position:relative;overflow:hidden;}
 .m-mid{flex:1;min-width:0;}
 .m-ticker{font-size:14px;font-weight:800;}
 .m-name{font-size:11.5px;color:var(--ink3);}
@@ -487,6 +487,14 @@ const STOCK_META={
   '035720.KS':{name:'카카오',color:'#FEE500',initial:'K',kr:'카카오'},
 };
 function metaOf(sym){return STOCK_META[sym]||{name:sym,color:'#7C3AED',initial:sym[0]||'?',kr:sym};}
+// 종목 실제 로고 — 토스증권이 쓰는 정적 리소스 주소(비공식·무인증, 문서화된 API 아님).
+// 한국종목은 6자리코드, 미국종목은 티커 그대로 같은 패턴으로 됨. 실패(403/404)하면 onerror로 스스로 제거돼
+// 부모 요소(색상+이니셜 아바타)가 폴백으로 그대로 보임. 매크로자산(지수·환율 등)은 시도 안 함.
+function logoImg(sym){
+  if(MACRO_SYMBOLS.includes(sym))return '';
+  const code=/\.(KS|KQ)$/.test(sym)?sym.split('.')[0]:sym;
+  return `<img src="https://static.toss.im/png-icons/securities/icn-sec-fill-${code}.png" onerror="this.remove()" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"/>`;
+}
 const won=(n,c)=>{if(n==null)return'—';const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:2});return (c||'$')+s;};
 // 한국 종목(.KS/.KQ)·원화 표시 자산은 "원", 채권은 "%", 지수는 단위 없이, 그 외(미국종목·원자재)는 "$"
 // 미국 달러 표시 심볼 판별(한국주식·원화·지수·채권 제외 = 달러로 표시되는 것). 미국개별주식·QQQ 등.
@@ -650,7 +658,7 @@ async function loadHome(){
       : '';
     return `<div class="gcard" onclick="nav('detail','${w.symbol}')">
       <div class="gcard-top">
-        <div class="gcard-logo" style="background:${m.color}">${m.initial}</div>
+        <div class="gcard-logo" style="background:${m.color}">${m.initial}${logoImg(w.symbol)}</div>
         <span class="gcard-badge ${cls}">${pct!=null?arrow+Math.abs(pct).toFixed(2)+'%':'—'}</span>
       </div>
       <div class="gcard-ticker">${w.symbol}</div>
@@ -714,7 +722,7 @@ function renderGoatJoat(){
     const pct=x.r.pct,cls=pct>=0?'up':'down',s=pct>=0?'+':'';
     return `<div onclick="nav('detail','${x.sym}')" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #F5F2FC;cursor:pointer;">
       <div style="font-size:12px;font-weight:800;color:var(--ink3);width:14px;">${rank}</div>
-      <div style="width:32px;height:32px;border-radius:10px;background:${m.color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0;">${m.initial}</div>
+      <div style="width:32px;height:32px;border-radius:10px;background:${m.color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0;position:relative;overflow:hidden;">${m.initial}${logoImg(x.sym)}</div>
       <div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;">${label}</div><div style="font-size:11px;color:var(--ink3);">${name}</div></div>
       <div class="${cls}" style="font-weight:800;font-size:14px;">${s}${pct.toFixed(1)}%</div>
     </div>`;
@@ -755,7 +763,7 @@ async function openDetail(sym){
   const mm=isMacro?MACRO_META[sym]:null;
   const m=mm||metaOf(sym);
   document.getElementById('dLogo').style.background=m.color;
-  document.getElementById('dLogo').textContent=m.initial;
+  document.getElementById('dLogo').innerHTML=m.initial+(isMacro?'':logoImg(sym));
   document.getElementById('dTicker').textContent=isMacro?mm.label:sym;
   document.getElementById('dName').textContent=isMacro?mm.category:(m.name+(isKR?' · '+(sym.endsWith('.KS')?'KOSPI':'KOSDAQ'):' · NASDAQ'));
   document.getElementById('dPrice').textContent='로딩중...';
@@ -1363,7 +1371,7 @@ async function loadManage(){
       const m=metaOf(w.symbol);
       return `<div class="manage-row" draggable="true" data-sym="${w.symbol}" data-idx="${i}" ondragstart="dragStart(event)" ondragover="dragOver(event)" ondrop="dragDrop(event)">
         <span class="drag-handle">≡</span>
-        <div class="m-logo" style="background:${m.color}" onclick="nav('detail','${w.symbol}')">${m.initial}</div>
+        <div class="m-logo" style="background:${m.color}" onclick="nav('detail','${w.symbol}')">${m.initial}${logoImg(w.symbol)}</div>
         <div class="m-mid" style="cursor:pointer;" onclick="nav('detail','${w.symbol}')"><div class="m-ticker">${w.symbol}</div><div class="m-name">${m.name}</div></div>
         <button class="del-btn" onclick="event.stopPropagation();delSymbol('${w.symbol}')"><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6h12z"/></svg></button>
       </div>`;
