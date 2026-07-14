@@ -547,7 +547,7 @@ async function periodQuote(sym){
   if(homePeriod==='day'){
     const {data}=await sb.from('quote_history').select('*').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(30);
     const rows=data||[];
-    return {latest:rows[0]||null,pct:rows[0]?rows[0].percent_change:null,series:rows.slice().reverse()};
+    return {latest:rows[0]||null,pct:rows[0]?rows[0].percent_change:null,series:rows.slice().reverse(),startPrice:null};
   }
   const cutoff=new Date(Date.now()-PERIOD_DAYS[homePeriod]*86400000).toISOString();
   const [descRes,startRes]=await Promise.all([
@@ -556,7 +556,7 @@ async function periodQuote(sym){
   ]);
   const desc=descRes.data||[],start=(startRes.data||[])[0],latest=desc[0]||null;
   const pct=(latest&&start&&start.price)?(latest.price-start.price)/start.price*100:(latest?latest.percent_change:null);
-  return {latest,pct,series:desc.slice().reverse()};
+  return {latest,pct,series:desc.slice().reverse(),startPrice:start?start.price:null};
 }
 function setHomePeriod(p){
   homePeriod=p;
@@ -565,15 +565,21 @@ function setHomePeriod(p){
 }
 async function loadIndexBox(){
   const results=await Promise.all(HOME_CARDS.map(c=>periodQuote(c.sym)));
+  const periodLabel={day:'오늘',week:'1주',month:'1개월'}[homePeriod];
+  const fmtIdx=(r,v)=>r.isRate?v.toFixed(3)+'%':v.toLocaleString('ko-KR',{maximumFractionDigits:2});
   document.getElementById('indexBox').innerHTML=HOME_CARDS.map((r,i)=>{
-    const {latest:q,pct}=results[i];
+    const {latest:q,pct,startPrice}=results[i];
     const cls=pct!=null&&pct<0?'down':'up';
     const arrow=pct!=null&&pct<0?'▼':'▲';
     // 지수·환율·원자재·코인·채권도 개별종목과 동일한 상세화면(차트+기간별비교+AI요약)으로 연결
-    const priceTxt=q?(r.isRate?q.price.toFixed(3)+'%':q.price.toLocaleString('ko-KR',{maximumFractionDigits:2})):'—';
+    const priceTxt=q?fmtIdx(r,q.price):'—';
+    // week/month: 그때(기간시작) 값 + 변동 서브라인
+    const sub=(homePeriod!=='day'&&q&&startPrice!=null)
+      ? `<div style="font-size:9.5px;color:var(--ink3);margin-top:3px;">${periodLabel} 전 ${fmtIdx(r,startPrice)} · <span class="${cls}">${arrow}${fmtIdx(r,Math.abs(q.price-startPrice))}</span></div>`
+      : '';
     return `<div class="idx-card" onclick="nav('detail','${r.sym}')"><div class="idx-name">${r.label}</div>
       <div class="idx-price">${priceTxt}</div>
-      <div class="idx-chg ${cls}">${pct!=null?arrow+' '+Math.abs(pct).toFixed(2)+'%':'—'}</div></div>`;
+      <div class="idx-chg ${cls}">${pct!=null?arrow+' '+Math.abs(pct).toFixed(2)+'%':'—'}</div>${sub}</div>`;
   }).join('');
 }
 // 미국주식 $/₩ 표시 토글 — 현재 환율로 원 환산. 관심종목 헤더의 버튼에서 호출.
@@ -597,16 +603,21 @@ async function loadHome(){
   if(!wl.length){document.getElementById('watchlistBox').innerHTML='<div class="empty-box">워치리스트가 비어있어요. 관리 탭에서 추가해보세요.</div>';return;}
 
   // 선택 기간(당일/1주/1개월)에 맞춰 종목별 등락률·추이 조회. 헤더 평균도 같은 기간 기준.
+  const periodLabel={day:'오늘',week:'1주',month:'1개월'}[homePeriod];
   const pqResults=await Promise.all(wl.map(w=>periodQuote(w.symbol)));
   let up=0,down=0,latestTime=null,pctSum=0,pctCount=0;
   const html=wl.map((w,i)=>{
-    const {latest:q,pct,series:ser}=pqResults[i];const m=metaOf(w.symbol);
+    const {latest:q,pct,series:ser,startPrice}=pqResults[i];const m=metaOf(w.symbol);
     if(q){
       if(pct!=null){if(pct>0)up++;else if(pct<0)down++;pctSum+=pct;pctCount++;}
       const t=new Date(q.fetched_at);if(!latestTime||t>latestTime)latestTime=t;
     }
     const cls=pct!=null&&pct<0?'down':'up';
     const arrow=pct!=null&&pct<0?'▼':'▲';
+    // week/month: 그때(기간시작) 가격 + 그 대비 변동금액 서브라인
+    const sub=(homePeriod!=='day'&&q&&startPrice!=null)
+      ? `<div style="font-size:10.5px;color:var(--ink3);margin-top:2px;">${periodLabel} 전 ${priceFmt(w.symbol,startPrice)} · <span class="${cls}">${arrow}${priceFmt(w.symbol,Math.abs(q.price-startPrice))}</span></div>`
+      : '';
     return `<div class="gcard" onclick="nav('detail','${w.symbol}')">
       <div class="gcard-top">
         <div class="gcard-logo" style="background:${m.color}">${m.initial}</div>
@@ -616,10 +627,10 @@ async function loadHome(){
       <div class="gcard-name">${m.name}</div>
       <svg width="100%" height="30" viewBox="0 0 120 30" preserveAspectRatio="none" style="margin-top:6px;">${sparkPath(ser||[],cls,120,30)}</svg>
       <div class="gcard-price">${q?priceFmt(w.symbol,q.price):'—'}</div>
+      ${sub}
     </div>`;
   }).join('');
   document.getElementById('watchlistBox').innerHTML=html;
-  const periodLabel={day:'오늘',week:'1주',month:'1개월'}[homePeriod];
   document.getElementById('hsTitle').textContent=(homePeriod==='day'?'오늘의':periodLabel)+' 관심 종목 등락 · 평균';
   document.getElementById('hsUpdated').textContent=homePeriod==='day'
     ?'평균 · '+(latestTime?latestTime.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+' 기준':'—')
