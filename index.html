@@ -287,7 +287,13 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
     <div class="card">
       <div class="chart-hd"><div class="chart-days">추이</div><div class="chart-days" id="chartPct"></div></div>
       <svg id="chartSvg" viewBox="0 0 320 140" style="width:100%;height:140px;display:block;touch-action:none;"></svg>
+      <div id="maLegend" class="hidden" style="display:flex;gap:10px;font-size:10.5px;color:var(--ink3);margin-top:4px;">
+        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#F59E0B;margin-right:3px;"></span>MA20</span>
+        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--purple);margin-right:3px;"></span>MA60</span>
+      </div>
+      <svg id="volSvg" viewBox="0 0 320 32" style="width:100%;height:32px;display:block;margin-top:4px;" class="hidden"></svg>
       <div id="barTooltip" class="bar-tooltip hidden"></div>
+      <div id="w52Box" class="hidden" style="font-size:11.5px;color:var(--ink3);margin-top:8px;text-align:center;"></div>
       <div class="period-tabs" id="periodTabs">
         <button class="ptab" data-p="1D" onclick="setPeriod('1D')">1일</button>
         <button class="ptab" data-p="1W" onclick="setPeriod('1W')">1주</button>
@@ -704,12 +710,13 @@ async function loadChart(sym){
   // 현재가/등락은 항상 "진짜 최신 1건"으로 (기간 필터와 무관)
   const {data:latestRows}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(1);
   const last=(latestRows||[])[0];
-  if(!last){document.getElementById('dPrice').textContent='데이터 없음';document.getElementById('chartSvg').innerHTML='';document.getElementById('barTooltip').classList.add('hidden');return;}
+  if(!last){document.getElementById('dPrice').textContent='데이터 없음';document.getElementById('chartSvg').innerHTML='';document.getElementById('barTooltip').classList.add('hidden');document.getElementById('volSvg').classList.add('hidden');document.getElementById('maLegend').classList.add('hidden');document.getElementById('w52Box').classList.add('hidden');return;}
   curPrice=last.price;
   document.getElementById('dPrice').textContent=priceFmt(sym,last.price);
   const arrow=last.percent_change<0?'▼':'▲';
   const chgAmt=Math.abs(last.price*(last.percent_change||0)/100);
   document.getElementById('dChg').textContent=`${arrow} ${priceFmt(sym,chgAmt)} (${Math.abs(last.percent_change||0).toFixed(2)}%)`;
+  load52wRange(sym);
 
   // 캔들 데이터 소스 선택:
   //  · 매크로(지수·환율·금·유가·비트코인) → 커스텀ID를 야후 티커로 매핑해 전 기간 야후 캔들. 미매핑(채권 등)은 막대.
@@ -762,6 +769,16 @@ async function loadChart(sym){
   }
   renderChart(rows);
 }
+// 52주 최고/최저 — daily_ohlc에 1년치 백필된 종목만 표시(없으면 박스 숨김). 선택 기간(curPeriod)과 무관하게 항상 최근 365일 기준.
+async function load52wRange(sym){
+  const box=document.getElementById('w52Box');
+  const cutoff=new Date(Date.now()-365*86400000).toISOString().slice(0,10);
+  const {data}=await sb.from('daily_ohlc').select('high,low').eq('symbol',sym).gte('date',cutoff);
+  if(!data||!data.length){box.classList.add('hidden');return;}
+  const hi=Math.max(...data.map(r=>+r.high)),lo=Math.min(...data.map(r=>+r.low));
+  box.innerHTML=`52주 최고 <b style="color:var(--ink2);">${priceFmt(sym,hi)}</b> · 최저 <b style="color:var(--ink2);">${priceFmt(sym,lo)}</b>`;
+  box.classList.remove('hidden');
+}
 const PERIOD_MS={'1D':86400000,'1W':7*86400000,'1M':30*86400000,'3M':90*86400000,'5M':150*86400000,'1Y':365*86400000};
 function setPeriod(p){
   curPeriod=p;
@@ -792,6 +809,26 @@ function fmtIntradayLabel(iso){
 let curIsCandle=false;
 // 일봉 캔들차트 — daily_ohlc 행(date/open/high/low/close/volume/percent_change)을 하루 1개 캔들로 그림.
 // 토스처럼 세밀한 얇은 캔들이라 버킷 집계 안 함(일별 그대로). 몸통=시가~종가, 꼬리=고가~저가, ▲빨강/▼파랑.
+// 단순이동평균 — i번째 값은 직전 period개(자신 포함) 종가의 평균, 데이터 부족한 앞부분은 null
+function sma(closes,period){
+  const out=new Array(closes.length).fill(null);
+  let sum=0;
+  for(let i=0;i<closes.length;i++){
+    sum+=closes[i];
+    if(i>=period)sum-=closes[i-period];
+    if(i>=period-1)out[i]=sum/period;
+  }
+  return out;
+}
+function maPathD(values,slot,mapY){
+  let d='';
+  for(let i=0;i<values.length;i++){
+    if(values[i]==null)continue;
+    const x=(i*slot+slot/2).toFixed(1),y=mapY(values[i]).toFixed(1);
+    d+=(d?'L':'M')+x+','+y+' ';
+  }
+  return d.trim();
+}
 function renderCandles(rows){
   curChartRows=rows;curIsCandle=true;
   const w=320,h=140,padTop=8,padBottom=4;
@@ -816,11 +853,46 @@ function renderCandles(rows){
     // 얇은 캔들은 탭이 어려워서 슬롯 전체 폭의 투명 히트영역을 겹쳐 둠
     svg+=`<rect data-idx="${i}" x="${(i*slot).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${h}" fill="transparent"/>`;
   }
+  // 이동평균선(MA20·MA60) — 일봉(3개월·1년) 기간에서만 의미 있어서 그 기간에만 오버레이
+  const maLegend=document.getElementById('maLegend');
+  if((curPeriod==='3M'||curPeriod==='1Y')&&n>=20){
+    const closes=rows.map(r=>+r.close);
+    const ma20d=maPathD(sma(closes,20),slot,map);
+    const ma60d=n>=60?maPathD(sma(closes,60),slot,map):'';
+    if(ma20d)svg+=`<path d="${ma20d}" fill="none" stroke="#F59E0B" stroke-width="1.1"/>`;
+    if(ma60d)svg+=`<path d="${ma60d}" fill="none" stroke="#7C3AED" stroke-width="1.1"/>`;
+    maLegend.classList.remove('hidden');
+  }else{
+    maLegend.classList.add('hidden');
+  }
   document.getElementById('chartSvg').innerHTML=svg;
+  renderVolume(rows,slot);
   showBarInfo(n-1);
+}
+// 캔들 아래 거래량 미니바 — 캔들과 동일한 x슬롯 사용해 정렬, 해당 일 상승/하락 색으로 표시
+function renderVolume(rows,slot){
+  const volSvg=document.getElementById('volSvg');
+  const vols=rows.map(r=>r.volume==null?null:+r.volume);
+  if(!vols.some(v=>v!=null&&v>0)){volSvg.classList.add('hidden');volSvg.innerHTML='';return;}
+  volSvg.classList.remove('hidden');
+  const vh=32,maxV=Math.max(...vols.filter(v=>v!=null));
+  const cw=Math.max(1,slot*0.62);
+  let svg='';
+  for(let i=0;i<rows.length;i++){
+    const v=vols[i];
+    if(v==null)continue;
+    const r=rows[i],up=(+r.close)>=(+r.open);
+    const bh=Math.max(1,(v/maxV)*vh);
+    const cx=i*slot+slot/2;
+    svg+=`<rect x="${(cx-cw/2).toFixed(1)}" y="${(vh-bh).toFixed(1)}" width="${cw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${up?'#E5342B':'#2563EB'}" opacity="0.55"/>`;
+  }
+  volSvg.innerHTML=svg;
 }
 function renderChart(rowsRaw){
   curIsCandle=false;
+  document.getElementById('volSvg').classList.add('hidden');
+  document.getElementById('volSvg').innerHTML='';
+  document.getElementById('maLegend').classList.add('hidden');
   // rows는 이미 loadChart에서 선택 기간으로 서버 필터링된 데이터. 여기서 기간별 막대 개수로 묶는다.
   const rows=bucketRows(rowsRaw,PERIOD_BARS[curPeriod]);
   curChartRows=rows;
@@ -888,8 +960,9 @@ function showBarInfo(idx){
   if(curIsCandle){
     const prev=curChartRows[idx-1];
     const chg=prev&&prev.close?((row.close-prev.close)/prev.close*100):null;
+    const volLine=row.volume!=null?`<div style="font-size:10.5px;color:var(--ink3);font-weight:600;margin-top:2px;">거래량 ${Math.round(row.volume).toLocaleString('ko-KR')}</div>`:'';
     tt.classList.remove('hidden');
-    tt.innerHTML=`<span>${row.label}</span><b>${priceFmt(curDetail,row.close)}${chg!=null?` <span style="color:${chg>=0?'var(--up)':'var(--down)'}">${chg>=0?'▲':'▼'}${Math.abs(chg).toFixed(2)}%</span>`:''}</b>`;
+    tt.innerHTML=`<span>${row.label}</span><div style="text-align:right;"><b>${priceFmt(curDetail,row.close)}${chg!=null?` <span style="color:${chg>=0?'var(--up)':'var(--down)'}">${chg>=0?'▲':'▼'}${Math.abs(chg).toFixed(2)}%</span>`:''}</b>${volLine}</div>`;
     return;
   }
   const d=new Date(row.fetched_at);
