@@ -308,6 +308,16 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
       <div id="periodCompareBox" style="margin-top:6px;"></div>
     </div>
 
+    <div class="card hidden" id="valuationCard">
+      <div style="font-size:15px;font-weight:800;">밸류에이션</div>
+      <div id="valuationBox" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card hidden" id="investorFlowCard">
+      <div style="font-size:15px;font-weight:800;">외국인·기관 순매수</div>
+      <div id="investorFlowBox" style="margin-top:10px;"></div>
+    </div>
+
     <div class="ai-card">
       <span class="ai-badge">✦ AI 종합 요약</span>
       <div class="ai-caption">뉴스·시세·컨센서스·실적 종합</div>
@@ -332,6 +342,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
         <div class="earn-mid"><div class="earn-sub">마지막 실적발표</div><div class="earn-date" id="earnPastDate" style="font-size:13.5px;"></div></div>
         <div class="dday" style="background:var(--ink4);" id="earnPastDday"></div>
       </div>
+      <div id="earnSurpriseLine" class="hidden" style="font-size:12.5px;color:var(--ink2);margin-top:8px;padding-top:8px;border-top:1px solid #F1EEF7;"></div>
     </div>
 
     <div id="newsSection">
@@ -688,6 +699,9 @@ async function openDetail(sym){
   document.getElementById('consensusBox').innerHTML='';
   document.getElementById('targetPriceBox').textContent='';
   document.getElementById('earningsCard').classList.add('hidden');
+  document.getElementById('earnSurpriseLine').classList.add('hidden');
+  document.getElementById('valuationCard').classList.add('hidden');
+  document.getElementById('investorFlowCard').classList.add('hidden');
   // 애널리스트 컨센서스·실적일정은 Finnhub(미국 개별종목) 전용이라 한국종목·매크로 자산엔 카드 자체를 숨김
   document.getElementById('consensusCard').classList.toggle('hidden',isKR||isMacro);
   // 미국주식($)이면 상세 헤더의 $/₩ 토글 노출(전역 usdView 공유). 그 외는 숨김(원/네이티브 통화).
@@ -702,9 +716,64 @@ async function openDetail(sym){
   }
   loadChart(sym);
   loadPeriodCompare(sym);
-  if(!isKR&&!isMacro){loadConsensus(sym);loadEarnings(sym);}
+  if(!isMacro)loadFundamentals(sym,isKR); // 매크로 자산은 PER·PBR 개념이 없어서 제외
+  if(isKR)loadInvestorFlow(sym);
+  if(!isKR&&!isMacro){loadConsensus(sym);loadEarnings(sym);loadEarningsSurprise(sym);}
   if(isMacro)loadMacroSummary(sym);
   else loadSummary(sym); // 뉴스도 이 안에서 같이 렌더링됨 (top_news)
+}
+// 밸류에이션(PER·PBR·시가총액·배당수익률·52주최고저) — 한국종목은 KIS, 미국종목은 Finnhub 온디맨드 조회
+async function loadFundamentals(sym,isKR){
+  const box=document.getElementById('valuationBox'),card=document.getElementById('valuationCard');
+  try{
+    const fn=isKR?'kis-stock-fundamentals':'finnhub-fundamentals';
+    const r=await fetch(`${SB_URL}/functions/v1/${fn}`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:sym})});
+    const d=await r.json();
+    if(d.error||(d.per==null&&d.pbr==null)){card.classList.add('hidden');return;}
+    const cap=isKR?(d.marketCapEok!=null?(d.marketCapEok/10000).toLocaleString('ko-KR',{maximumFractionDigits:1})+'조원':null)
+                  :(d.marketCapM!=null?'$'+(d.marketCapM/1000000).toLocaleString('ko-KR',{maximumFractionDigits:2})+'T':null);
+    const row=(label,val)=>val==null?'':`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;"><span style="color:var(--ink3);">${label}</span><span style="font-weight:700;">${val}</span></div>`;
+    box.innerHTML=[
+      row('PER',d.per!=null?d.per.toFixed(2)+'배':null),
+      row('PBR',d.pbr!=null?d.pbr.toFixed(2)+'배':null),
+      row('시가총액',cap),
+      row('배당수익률',d.dividendYield!=null?d.dividendYield.toFixed(2)+'%':null),
+      row('52주 최고',d.week52High!=null?priceFmt(sym,d.week52High):null),
+      row('52주 최저',d.week52Low!=null?priceFmt(sym,d.week52Low):null),
+    ].join('');
+    card.classList.remove('hidden');
+  }catch(e){card.classList.add('hidden');}
+}
+// 외국인·기관 순매수(한국종목 전용) — 최근 5거래일
+async function loadInvestorFlow(sym){
+  const box=document.getElementById('investorFlowBox'),card=document.getElementById('investorFlowCard');
+  try{
+    const r=await fetch(`${SB_URL}/functions/v1/kis-investor-flow`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:sym})});
+    const d=await r.json();
+    if(d.error||!d.rows||!d.rows.length){card.classList.add('hidden');return;}
+    const rows=d.rows.slice(-5).reverse();
+    const fmtQty=(v)=>{const c=v>=0?'up':'down';const s=v>=0?'+':'';return`<span class="${c}" style="font-weight:700;">${s}${Math.round(v).toLocaleString('ko-KR')}</span>`;};
+    const fmtDate=(s)=>s.slice(4,6)+'/'+s.slice(6,8);
+    box.innerHTML=`
+      <div style="display:flex;font-size:11px;color:var(--ink3);padding-bottom:6px;"><span style="flex:1;">날짜</span><span style="flex:1.4;text-align:right;">외국인</span><span style="flex:1.4;text-align:right;">기관</span></div>
+      ${rows.map(r=>`<div style="display:flex;font-size:12.5px;padding:5px 0;border-top:1px solid #F5F2FC;"><span style="flex:1;color:var(--ink2);">${fmtDate(r.date)}</span><span style="flex:1.4;text-align:right;">${fmtQty(r.foreign)}</span><span style="flex:1.4;text-align:right;">${fmtQty(r.institution)}</span></div>`).join('')}
+    `;
+    card.classList.remove('hidden');
+  }catch(e){card.classList.add('hidden');}
+}
+// 실적 서프라이즈(미국종목 전용) — 가장 최근 분기 실제 EPS vs 컨센서스
+async function loadEarningsSurprise(sym){
+  const line=document.getElementById('earnSurpriseLine');
+  try{
+    const r=await fetch(`${SB_URL}/functions/v1/finnhub-earnings-surprise`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:sym})});
+    const d=await r.json();
+    const s=(d.surprises||[])[0];
+    if(!s||s.actual==null||s.estimate==null){line.classList.add('hidden');return;}
+    const beat=s.surprisePercent>=0;
+    line.innerHTML=`실제 EPS <b>$${s.actual.toFixed(2)}</b> · 예상 $${s.estimate.toFixed(2)} · <span class="${beat?'up':'down'}" style="font-weight:700;">${beat?'+':''}${s.surprisePercent.toFixed(2)}%</span>`;
+    line.classList.remove('hidden');
+    document.getElementById('earningsCard').classList.remove('hidden');
+  }catch(e){line.classList.add('hidden');}
 }
 async function loadChart(sym){
   // 현재가/등락은 항상 "진짜 최신 1건"으로 (기간 필터와 무관)
