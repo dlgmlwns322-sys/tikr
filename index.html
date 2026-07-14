@@ -487,13 +487,23 @@ const STOCK_META={
   '035720.KS':{name:'카카오',color:'#FEE500',initial:'K',kr:'카카오'},
 };
 function metaOf(sym){return STOCK_META[sym]||{name:sym,color:'#7C3AED',initial:sym[0]||'?',kr:sym};}
-// 종목 실제 로고 — 토스증권이 쓰는 정적 리소스 주소(비공식·무인증, 문서화된 API 아님).
-// 한국종목은 6자리코드, 미국종목은 티커 그대로 같은 패턴으로 됨. 실패(403/404)하면 onerror로 스스로 제거돼
-// 부모 요소(색상+이니셜 아바타)가 폴백으로 그대로 보임. 매크로자산(지수·환율 등)은 시도 안 함.
+// 종목 실제 로고 — 1차: 토스증권이 쓰는 정적 리소스 주소(비공식·무인증, 문서화된 API 아님, 한국6자리코드/미국티커 동일 패턴).
+// 실패하면(GEV처럼 토스에 없는 일부 미국종목) 2차로 Finnhub 공식 API에서 로고 URL을 받아 교체.
+// 그것도 실패하면(한국종목 등) onerror로 이미지 스스로 제거돼 부모 요소(색상+이니셜 아바타)가 폴백으로 남음.
+// 매크로자산(지수·환율 등)은 시도 안 함.
 function logoImg(sym){
   if(MACRO_SYMBOLS.includes(sym))return '';
   const code=/\.(KS|KQ)$/.test(sym)?sym.split('.')[0]:sym;
-  return `<img src="https://static.toss.im/png-icons/securities/icn-sec-fill-${code}.png" onerror="this.remove()" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"/>`;
+  return `<img src="https://static.toss.im/png-icons/securities/icn-sec-fill-${code}.png" onerror="logoFallback(this,'${sym}')" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"/>`;
+}
+async function logoFallback(img,sym){
+  if(/\.(KS|KQ)$/.test(sym)){img.remove();return;} // 한국종목은 Finnhub도 프리미엄 전용이라 바로 폴백
+  try{
+    const r=await fetch(`${SB_URL}/functions/v1/stock-logo`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_KEY},body:JSON.stringify({symbol:sym})});
+    const d=await r.json();
+    if(d.logo){img.onerror=()=>img.remove();img.src=d.logo;}
+    else img.remove();
+  }catch(_e){img.remove();}
 }
 const won=(n,c)=>{if(n==null)return'—';const s=Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:2});return (c||'$')+s;};
 // 한국 종목(.KS/.KQ)·원화 표시 자산은 "원", 채권은 "%", 지수는 단위 없이, 그 외(미국종목·원자재)는 "$"
