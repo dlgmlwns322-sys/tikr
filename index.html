@@ -260,6 +260,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
 
     <div class="sec-head" style="margin-top:8px;"><div class="sec-title">관심 종목</div><button class="sec-more" onclick="nav('manage')">전체보기</button></div>
     <div id="watchlistBox" style="display:grid;grid-template-columns:1fr 1fr;gap:11px;"><div class="spin"></div></div>
+
+    <div class="sec-head" style="margin-top:14px;"><div class="sec-title">최근 3개월 GOAT · JOAT</div></div>
+    <div id="goatJoatBox"></div>
   </div>
 </div>
 
@@ -659,6 +662,47 @@ async function loadHome(){
   const total=Math.max(up+down,1);
   document.getElementById('hsRatioBar').innerHTML=`<span style="flex:${up||0.001};height:6px;border-radius:3px;background:#FF8A80;"></span><span style="flex:${down||0.001};height:6px;border-radius:3px;background:#82AAF5;"></span>`;
   document.getElementById('bellDot').style.display=up+down>0?'block':'none';
+  loadGoatJoat(wl.map(w=>w.symbol));
+}
+// 3개월 전 대비 등락률 — homePeriod(day/week/month) 토글과 무관하게 항상 3개월 고정
+async function return3M(sym){
+  const cutoff=new Date(Date.now()-90*86400000).toISOString();
+  const [latestRes,startRes]=await Promise.all([
+    sb.from('quote_history').select('price').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(1),
+    sb.from('quote_history').select('price').eq('symbol',sym).gte('fetched_at',cutoff).order('fetched_at',{ascending:true}).limit(1),
+  ]);
+  const latest=(latestRes.data||[])[0],start=(startRes.data||[])[0];
+  if(!latest||!start||!start.price)return null;
+  return{pct:(latest.price-start.price)/start.price*100};
+}
+// 홈 최하단 — 관심종목+주요지수(코스피·코스닥·QQQ) 중 최근 3개월 수익률 top3(GOAT)·bottom3(JOAT)
+async function loadGoatJoat(stockSymbols){
+  const box=document.getElementById('goatJoatBox');
+  const pool=[...stockSymbols,'KOSPI','KOSDAQ','QQQ'];
+  const results=await Promise.all(pool.map(async sym=>({sym,r:await return3M(sym)})));
+  const valid=results.filter(x=>x.r&&isFinite(x.r.pct));
+  if(valid.length<2){box.innerHTML='';return;}
+  valid.sort((a,b)=>b.r.pct-a.r.pct);
+  const goat=valid.slice(0,3),joat=valid.slice(-3).reverse();
+  const rowHtml=(x,rank)=>{
+    const isMacro=MACRO_SYMBOLS.includes(x.sym);
+    const m=isMacro?MACRO_META[x.sym]:metaOf(x.sym);
+    const label=isMacro?m.label:x.sym;
+    const name=isMacro?m.category:m.name;
+    const pct=x.r.pct,cls=pct>=0?'up':'down',s=pct>=0?'+':'';
+    return `<div onclick="nav('detail','${x.sym}')" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #F5F2FC;cursor:pointer;">
+      <div style="font-size:12px;font-weight:800;color:var(--ink3);width:14px;">${rank}</div>
+      <div style="width:32px;height:32px;border-radius:10px;background:${m.color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0;">${m.initial}</div>
+      <div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;">${label}</div><div style="font-size:11px;color:var(--ink3);">${name}</div></div>
+      <div class="${cls}" style="font-weight:800;font-size:14px;">${s}${pct.toFixed(1)}%</div>
+    </div>`;
+  };
+  box.innerHTML=`
+    <div style="font-size:12.5px;font-weight:800;color:var(--up);margin-top:6px;">🐐 GOAT · 최근 3개월 수익률 TOP3</div>
+    ${goat.map((x,i)=>rowHtml(x,i+1)).join('')}
+    <div style="font-size:12.5px;font-weight:800;color:var(--down);margin-top:14px;">JOAT · 최근 3개월 수익률 BOTTOM3</div>
+    ${joat.map((x,i)=>rowHtml(x,i+1)).join('')}
+  `;
 }
 function sparkPath(points,cls,w,h){
   w=w||52;h=h||26;
