@@ -14,10 +14,26 @@ async function call(path: string) {
   return { path, ok: res.ok, body };
 }
 
+// 한국 정규장(월~금 9:00~15:30 KST)만 KIS(지수·개별종목) 갱신. 마감·주말엔 시세 안 변하니 건너뛰어 egress 절약.
+// 코인(24시간)·환율은 항상 갱신.
+function krMarketOpen(): boolean {
+  const p = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date());
+  const wd = p.find((x) => x.type === "weekday")?.value;
+  if (wd === "Sat" || wd === "Sun") return false;
+  const hh = +(p.find((x) => x.type === "hour")?.value ?? "0");
+  const mm = +(p.find((x) => x.type === "minute")?.value ?? "0");
+  const mins = hh * 60 + mm;
+  return mins >= 9 * 60 && mins < 15 * 60 + 30;
+}
+
 Deno.serve(async () => {
   const results = [];
-  results.push(await call("kis-index"));
-  results.push(await call("kis-stock-quote"));
+  if (krMarketOpen()) {
+    results.push(await call("kis-index"));
+    results.push(await call("kis-stock-quote"));
+  }
   results.push(await call("forex-quote"));
   results.push(await call("upbit-quote"));
   results.push(await call("binance-quote"));
