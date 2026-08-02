@@ -593,7 +593,7 @@ const MACRO_META={
 const PERIOD_DAYS={week:7,month:30};
 async function periodQuote(sym){
   if(homePeriod==='day'){
-    const {data}=await sb.from('quote_history').select('*').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(30);
+    const {data}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).order('fetched_at',{ascending:false}).limit(30);
     const rows=data||[];
     return {latest:rows[0]||null,pct:rows[0]?rows[0].percent_change:null,series:rows.slice().reverse(),startPrice:null};
   }
@@ -912,7 +912,7 @@ async function loadChart(sym){
   // 버그가 있던 시절 쌓인 대량의 옛날 데이터가 그 2000개 한도를 다 차지해버려서 최근 데이터가
   // 밀려나 차트가 "예전 가격에 눌린 평평한 선 + 끝에 갑자기 튀는 점"처럼 보이는 문제가 있었음.
   const cutoff=new Date(Date.now()-PERIOD_MS[curPeriod]).toISOString();
-  const {data}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).gte('fetched_at',cutoff).order('fetched_at',{ascending:true}).limit(2000);
+  const {data}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).gte('fetched_at',cutoff).order('fetched_at',{ascending:true}).limit(500);
   const rows=data||[];
   if(!rows.length){
     document.getElementById('chartSvg').innerHTML='';

@@ -4,7 +4,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 // 업비트 공개 API는 인증 없이 시세 조회 가능
-const MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
+const MARKETS = ["KRW-BTC"];
 
 // 코인 백필: 업비트 공개 캔들 API(/v1/candles/days)로 일별 종가 히스토리를 무료·무인증으로 받는다.
 // 1회 최대 200개라 365일 채우려면 to(커서) 파라미터로 페이지네이션.

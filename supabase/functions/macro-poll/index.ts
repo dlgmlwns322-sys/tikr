@@ -15,7 +15,7 @@ async function call(path: string) {
 }
 
 // 한국 정규장(월~금 9:00~15:30 KST)만 KIS(지수·개별종목) 갱신. 마감·주말엔 시세 안 변하니 건너뛰어 egress 절약.
-// 코인(24시간)·환율은 항상 갱신.
+// 환율은 항상 확인하되 동일 가격은 저장하지 않는다. 비트코인은 15분마다 갱신한다.
 function krMarketOpen(): boolean {
   const p = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Seoul", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
@@ -35,7 +35,7 @@ Deno.serve(async () => {
     results.push(await call("kis-stock-quote"));
   }
   results.push(await call("forex-quote"));
-  results.push(await call("upbit-quote"));
-  results.push(await call("binance-quote"));
+  const minute = new Date().getUTCMinutes();
+  if (minute % 15 === 0) results.push(await call("upbit-quote"));
   return Response.json({ results });
 });
