@@ -13,27 +13,81 @@ test('24시간 자동 수집은 BTC_KRW 하나를 15분 간격으로 유지한�
   const upbit = read('supabase/functions/upbit-quote/index.ts');
 
   assert.doesNotMatch(macro, /call\("binance-quote"\)/);
-  assert.match(macro, /minute\s*%\s*15\s*===\s*0/);
-  assert.match(macro, /if\s*\(minute\s*%\s*15\s*===\s*0\)[\s\S]*call\("upbit-quote"\)/);
+  assert.match(macro, /minute\s*%\s*15\s*<\s*5/);
+  assert.match(macro, /if\s*\(isUpbitSlot\(startMinute\)\)\s*results\.push\(await call\("upbit-quote"\)\)/);
   assert.match(upbit, /const MARKETS = \["KRW-BTC"\];/);
 });
 
-test('프론트 Supabase 조회는 필요한 필드와 500행 상한만 사용한다', () => {
+test('프론트 Supabase 조회는 필요한 필드와 1000행 상한만 사용한다', () => {
   const html = read('index.html');
 
   assert.match(html, /select\('price,percent_change,fetched_at'\)[\s\S]*limit\(30\)/);
   assert.doesNotMatch(html, /limit\(2000\)/);
-  assert.match(html, /limit\(500\)/);
+  // 오름차순+상한 조합은 최신 구간을 잘라내므로 금지 (시작점 1행 조회는 예외)
+  assert.doesNotMatch(html, /ascending:true\}\)\.limit\((?!1\))\d+\)/);
+});
+
+// loadChart 폴백의 quote_history 조회 구간(cutoff~rows)을 index.html에서 잘라 order·limit을 지키는 가짜 sb로 실행한다.
+async function runChartFallback(history, { now, period }) {
+  const html = read('index.html');
+  const start = html.indexOf("  const cutoff=new Date(Date.now()-PERIOD_MS[curPeriod])");
+  const end = html.indexOf('\n', html.indexOf('const rows=', start));
+  assert.ok(start > 0 && end > start, 'loadChart 폴백 조회 구간을 찾지 못함');
+  const snippet = html.slice(start, end);
+  const q = { filters: [] };
+  const b = {
+    select() { return b; },
+    eq(k, v) { q.filters.push(['eq', k, v]); return b; },
+    gte(k, v) { q.filters.push(['gte', k, v]); return b; },
+    order(col, opt) { q.order = [col, opt?.ascending !== false]; return b; },
+    limit(n) { q.limit = n; return b; },
+    then(res) {
+      const [col, asc] = q.order;
+      const rows = history
+        .filter((r) => q.filters.every(([op, k, v]) => (op === 'eq' ? r[k] === v : r[k] >= v)))
+        .sort((x, y) => (asc ? 1 : -1) * x[col].localeCompare(y[col]))
+        .slice(0, q.limit);
+      return Promise.resolve({ data: rows }).then(res);
+    },
+  };
+  const sb = { from: () => b };
+  const RealDate = Date;
+  class FakeDate extends RealDate {
+    constructor(...a) { super(...(a.length ? a : [now])); }
+    static now() { return new RealDate(now).getTime(); }
+  }
+  const PERIOD_MS = { '1Y': 365 * 86400000 };
+  const fn = new Function('sb', 'sym', 'curPeriod', 'PERIOD_MS', 'Date', `return (async()=>{${snippet}\nreturn {rows};})()`);
+  const { rows } = await fn(sb, 'BTC_KRW', period, PERIOD_MS, FakeDate);
+  return { rows, query: q };
+}
+
+test('loadChart 폴백: 상한 초과 시에도 최신 행을 포함하고 오름차순으로 렌더한다', async () => {
+  const now = '2026-09-23T12:00:00Z';
+  // 1년 전부터 15분 간격 1500행 → 1000행 상한 초과
+  const base = new Date(now).getTime();
+  const history = Array.from({ length: 1500 }, (_, i) => ({
+    symbol: 'BTC_KRW', price: i, percent_change: 0,
+    fetched_at: new Date(base - i * 15 * 60000).toISOString(),
+  }));
+  const { rows, query } = await runChartFallback(history, { now, period: '1Y' });
+  assert.deepEqual(query.order, ['fetched_at', false]);
+  assert.equal(query.limit, 1000);
+  assert.equal(rows.length, 1000);
+  assert.equal(rows.at(-1).fetched_at, new Date(base).toISOString()); // 최신 행 포함
+  for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].fetched_at < rows[i].fetched_at); // 오름차순
 });
 
 // ---- check-price-alerts / macro-poll 조회·응답량 회귀 검사 ----
 
 // Edge Function 소스를 jsr import 없이 실행해 Deno.serve 핸들러를 꺼낸다. Date·fetch·createClient는 주입한 가짜로 대체.
+// now는 고정 시각 문자열 또는 현재 시각을 돌려주는 함수(실행 중 시간 경과 흉내).
 function loadHandler(path, { now, createClient, fetch }) {
   const js = stripTypeScriptTypes(read(path).replace(/^import .*$/m, ''));
   let handler;
+  const clock = typeof now === 'function' ? now : () => now;
   class FakeDate extends Date {
-    constructor(...args) { super(...(args.length ? args : [now])); }
+    constructor(...args) { super(...(args.length ? args : [clock()])); }
   }
   const Deno = { env: { get: () => 'x' }, serve: (fn) => { handler = fn; } };
   new Function('Deno', 'createClient', 'fetch', 'Date', js)(Deno, createClient, fetch, FakeDate);
@@ -104,7 +158,11 @@ test('check-price-alerts는 price_alerts를 필요한 컬럼만 조회한다', (
   assert.match(src, /\.select\("id,symbol,kind,direction,threshold,last_fired_session"\)/);
 });
 
-test('check-price-alerts: 장 마감 시장 심볼만 있으면 quote_history 조회 없이 조기 종료한다', async () => {
+test('check-price-alerts: 장 마감 조기 종료 없이 장외에도 정규장 심볼 알림을 평가한다', async () => {
+  const src = read('supabase/functions/check-price-alerts/index.ts');
+  assert.doesNotMatch(src, /markets closed/);
+  assert.doesNotMatch(src, /MarketOpen/);
+
   const alerts = [
     { id: 1, symbol: 'AAPL', kind: 'pct', direction: 'below', threshold: -1, last_fired_session: null, enabled: true },
     { id: 2, symbol: '005930.KS', kind: 'price', direction: 'above', threshold: 1, last_fired_session: null, enabled: true },
@@ -114,12 +172,14 @@ test('check-price-alerts: 장 마감 시장 심볼만 있으면 quote_history �
     { symbol: '005930.KS', price: 70000, percent_change: 1, fetched_at: '2026-09-25T06:29:00Z' },
   ];
   const r = await runAlerts({ now: WEEKEND, alerts, quotes });
-  assert.equal(r.body.skipped, 'markets closed');
-  assert.deepEqual(r.sent, []);
-  assert.equal(r.log.filter((q) => q.table === 'quote_history').length, 0);
+  assert.equal(r.body.skipped, undefined);
+  assert.equal(r.body.checked, 2);
+  assert.deepEqual(r.body.fired.sort(), ['005930.KS(price)', 'AAPL(pct)']);
+  assert.equal(r.sent.length, 2);
+  assert.equal(r.alerts[1].enabled, false);
 });
 
-test('check-price-alerts: 24시간 시장 심볼(코인)이 있으면 장 마감에도 전체를 평가한다', async () => {
+test('check-price-alerts: 24시간 시장 심볼(코인)과 섞여 있어도 장 마감에 전체를 평가한다', async () => {
   const alerts = [
     { id: 1, symbol: 'AAPL', kind: 'pct', direction: 'below', threshold: -1, last_fired_session: null, enabled: true },
     { id: 2, symbol: 'BTC_KRW', kind: 'price', direction: 'above', threshold: 100, last_fired_session: null, enabled: true },
@@ -169,4 +229,39 @@ test('macro-poll은 하위 함수 body를 싣지 않고 path·ok·status 요약�
   assert.deepEqual(body.results.map((r) => r.path), ['kis-index', 'kis-stock-quote', 'forex-quote', 'upbit-quote']);
   for (const r of body.results) assert.deepEqual(Object.keys(r).sort(), ['ok', 'path', 'status']);
   assert.ok(JSON.stringify(body).length < 300);
+});
+
+// macro-poll을 실행해 호출된 하위 함수 경로를 돌려준다. advance: 하위 호출마다 시계를 진행할 ms(선행 await 지연 흉내).
+async function runMacro(startIso, advance = 0) {
+  let t = new Date(startIso).getTime();
+  const called = [];
+  const fetch = async (url) => {
+    called.push(String(url).split('/').pop());
+    t += advance;
+    return new Response('{}');
+  };
+  const handler = loadHandler('supabase/functions/macro-poll/index.ts', { now: () => new Date(t).toISOString(), createClient: null, fetch });
+  await handler();
+  return called;
+}
+
+test('macro-poll: 업비트는 시작분 % 15 < 5 슬롯에서만 호출한다 (크론 1~4분 지연 허용)', async () => {
+  // 주말 12:MM KST(=03:MM UTC) — KIS 건너뜀, 환율 + (슬롯이면) 업비트
+  for (const m of [0, 1, 4, 15, 16, 34, 49]) {
+    const called = await runMacro(`2026-09-26T03:${String(m).padStart(2, '0')}:00Z`);
+    assert.ok(called.includes('upbit-quote'), `${m}분 통과해야 함`);
+  }
+  for (const m of [5, 14, 20, 29, 59]) {
+    const called = await runMacro(`2026-09-26T03:${String(m).padStart(2, '0')}:00Z`);
+    assert.ok(!called.includes('upbit-quote'), `${m}분 불통과해야 함`);
+  }
+});
+
+test('macro-poll: 선행 호출이 분을 넘겨도 함수 시작분 기준으로 판정한다', async () => {
+  // 한국장 10:04 시작 → KIS·환율 3회 호출 동안 분당 1분씩 흘러 10:07 → 시작분 4 기준으로 통과
+  const late = await runMacro('2026-09-23T01:04:00Z', 60000);
+  assert.deepEqual(late, ['kis-index', 'kis-stock-quote', 'forex-quote', 'upbit-quote']);
+  // 09:59 시작 → 선행 호출 뒤 10:02가 돼도 시작분 59(슬롯 밖) 기준으로 불통과
+  const early = await runMacro('2026-09-23T00:59:00Z', 60000);
+  assert.ok(!early.includes('upbit-quote'));
 });

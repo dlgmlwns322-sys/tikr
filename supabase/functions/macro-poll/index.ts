@@ -29,14 +29,20 @@ function krMarketOpen(): boolean {
   return mins >= 9 * 60 && mins < 15 * 60 + 30;
 }
 
+// 크론(*/5)이 1~4분 늦게 도착해도 15분마다 1회 수집되도록, 정확히 0·15·30·45분이 아니라 그 뒤 5분 슬롯(시작분 % 15 < 5)으로 판정.
+// 선행 호출(KIS·환율) 대기 중 분이 넘어가도 영향 없게 함수 시작 시점의 분으로 판정한다.
+function isUpbitSlot(minute: number): boolean {
+  return minute % 15 < 5;
+}
+
 Deno.serve(async () => {
+  const startMinute = new Date().getUTCMinutes();
   const results = [];
   if (krMarketOpen()) {
     results.push(await call("kis-index"));
     results.push(await call("kis-stock-quote"));
   }
   results.push(await call("forex-quote"));
-  const minute = new Date().getUTCMinutes();
-  if (minute % 15 === 0) results.push(await call("upbit-quote"));
+  if (isUpbitSlot(startMinute)) results.push(await call("upbit-quote"));
   return Response.json({ results });
 });

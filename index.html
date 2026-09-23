@@ -912,8 +912,10 @@ async function loadChart(sym){
   // 버그가 있던 시절 쌓인 대량의 옛날 데이터가 그 2000개 한도를 다 차지해버려서 최근 데이터가
   // 밀려나 차트가 "예전 가격에 눌린 평평한 선 + 끝에 갑자기 튀는 점"처럼 보이는 문제가 있었음.
   const cutoff=new Date(Date.now()-PERIOD_MS[curPeriod]).toISOString();
-  const {data}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).gte('fetched_at',cutoff).order('fetched_at',{ascending:true}).limit(500);
-  const rows=data||[];
+  // 행 상한에 걸려도 최신 구간이 잘리지 않게 내림차순으로 최신 1000행을 받은 뒤 뒤집어 오름차순으로 그린다
+  // (상한 초과 시 기간의 앞쪽 오래된 구간이 빠진다).
+  const {data}=await sb.from('quote_history').select('price,percent_change,fetched_at').eq('symbol',sym).gte('fetched_at',cutoff).order('fetched_at',{ascending:false}).limit(1000);
+  const rows=(data||[]).slice().reverse();
   if(!rows.length){
     document.getElementById('chartSvg').innerHTML='';
     document.getElementById('chartPct').textContent='데이터 없음';
