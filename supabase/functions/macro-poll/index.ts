@@ -10,8 +10,9 @@ async function call(path: string) {
     method: "POST",
     headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
   });
-  const body = await res.json().catch(() => ({}));
-  return { path, ok: res.ok, body };
+  // 하위 함수 응답 body는 끝까지 읽어서(기존처럼 완료 대기) 버리고 요약만 반환 — body 통째로 싣던 응답이 egress로 잡혀서 줄임.
+  await res.arrayBuffer().catch(() => {});
+  return { path, ok: res.ok, status: res.status };
 }
 
 // 한국 정규장(월~금 9:00~15:30 KST)만 KIS(지수·개별종목) 갱신. 마감·주말엔 시세 안 변하니 건너뛰어 egress 절약.

@@ -20,6 +20,30 @@ function sessionKeyFor(symbol: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
 }
 
+// 장 시간(정규장)에만 quote_history가 갱신되는 심볼인지 — 장이 닫혀 있으면 시세가 안 변하므로 평가를 건너뛸 수 있다.
+// 환율·코인·원자재·채권·모르는 심볼은 null(항상 평가)로 둬서 24시간 시장 알림은 계속 체크한다.
+const ALWAYS_EVALUATE = new Set(["USD_KRW", "BTC_KRW", "XAUUSD", "BRENT_CRUDE", "US_BOND_10Y", "KR_BOND_3Y"]);
+function sessionMarketFor(symbol: string): "kr" | "us" | null {
+  if (ALWAYS_EVALUATE.has(symbol)) return null;
+  if (/\.(KS|KQ)$/.test(symbol) || symbol === "KOSPI" || symbol === "KOSDAQ") return "kr";
+  if (/^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) return "us"; // 나스닥 개별종목·QQQ (finnhub-quote가 미국 정규장에만 갱신)
+  return null;
+}
+function marketOpen(tz: string, openMins: number, closeMins: number): boolean {
+  const p = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date());
+  const wd = p.find((x) => x.type === "weekday")?.value;
+  if (wd === "Sat" || wd === "Sun") return false;
+  const hh = +(p.find((x) => x.type === "hour")?.value ?? "0");
+  const mm = +(p.find((x) => x.type === "minute")?.value ?? "0");
+  const mins = hh * 60 + mm;
+  return mins >= openMins && mins < closeMins;
+}
+// macro-poll(한국 9:00~15:30 KST)·finnhub-quote(미국 9:30~16:00 ET)의 갱신 게이팅과 같은 시간대.
+const krMarketOpen = () => marketOpen("Asia/Seoul", 9 * 60, 15 * 60 + 30);
+const usMarketOpen = () => marketOpen("America/New_York", 9 * 60 + 30, 16 * 60);
+
 function priceFmt(symbol: string, n: number): string {
   const s = Math.abs(n).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
   if (/\.(KS|KQ)$/.test(symbol) || symbol === "USD_KRW" || symbol === "BTC_KRW") return s + "원";
@@ -47,14 +71,39 @@ Deno.serve(async () => {
     headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
   }).catch(() => {});
 
-  const { data: alerts, error } = await supabase.from("price_alerts").select("*").eq("enabled", true);
+  const { data: alerts, error } = await supabase
+    .from("price_alerts")
+    .select("id,symbol,kind,direction,threshold,last_fired_session")
+    .eq("enabled", true);
   if (error) return Response.json({ error: error.message }, { status: 500 });
   if (!alerts || alerts.length === 0) return Response.json({ checked: 0, fired: [] });
 
   const symbols = [...new Set(alerts.map((a) => a.symbol))];
+
+  // 대상 심볼이 전부 장 마감 시장(한국·미국 정규장) 소속이고 그 시장이 모두 닫혀 있으면 시세가 안 변하므로 조기 종료.
+  // 24시간 시장 심볼(환율·코인 등)이 하나라도 있으면 기존대로 전체 평가한다.
+  const krOpen = krMarketOpen();
+  const usOpen = usMarketOpen();
+  const allClosed = symbols.every((symbol) => {
+    const market = sessionMarketFor(symbol);
+    return market === "kr" ? !krOpen : market === "us" ? !usOpen : false;
+  });
+  if (allClosed) return Response.json({ checked: 0, fired: [], skipped: "markets closed" });
+
+  // 심볼별 최신 1행: 먼저 1회 조회(fetched_at 내림차순 상위 N행)로 받고, 거기 없던 심볼만 기존처럼 개별 조회.
+  // 상위 N행 안에 등장한 심볼의 첫 행은 그 심볼의 최신 행이므로 결과는 심볼별 개별 조회와 같다.
   const latestBySymbol: Record<string, { price: number; percent_change: number }> = {};
+  const { data: recent } = await supabase
+    .from("quote_history")
+    .select("symbol, price, percent_change")
+    .in("symbol", symbols)
+    .order("fetched_at", { ascending: false })
+    .limit(symbols.length * 2);
+  for (const row of recent ?? []) {
+    if (!latestBySymbol[row.symbol]) latestBySymbol[row.symbol] = { price: row.price, percent_change: row.percent_change };
+  }
   await Promise.all(
-    symbols.map(async (symbol) => {
+    symbols.filter((symbol) => !latestBySymbol[symbol]).map(async (symbol) => {
       const { data } = await supabase
         .from("quote_history")
         .select("price, percent_change")
@@ -82,7 +131,7 @@ Deno.serve(async () => {
         .update({ enabled: false })
         .eq("id", alert.id)
         .eq("enabled", true)
-        .select();
+        .select("id");
       if (updated && updated.length > 0) {
         await sendTelegram(
           `🎯 목표가 도달\n${alert.symbol} ${priceFmt(alert.symbol, quote.price)}\n기준: ${alert.direction === "below" ? "이하" : "이상"} ${priceFmt(alert.symbol, alert.threshold)}`,
