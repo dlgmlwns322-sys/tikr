@@ -44,6 +44,15 @@ async function sendTelegram(text: string): Promise<boolean> {
   }
 }
 
+// 전송 실패 뒤 발동 기록 되돌리기. DB 오류면 한 번 더 시도하고, 그래도 실패하면 false(응답 revertFailed로 드러냄).
+async function revert(run: () => PromiseLike<{ error: unknown }>): Promise<boolean> {
+  for (let i = 0; i < 2; i++) {
+    const { error } = await run();
+    if (!error) return true;
+  }
+  return false;
+}
+
 // 오래된 시세로 알림이 발동하지 않게(정지·수집 실패 뒤 재개 등) 최신 행의 시각을 본다.
 // - 등락률(pct): 그날 세션의 등락이므로 지금 거래 세션 것만. 장 마감 뒤에도 같은 세션이면 평가(2026-09-23 규칙).
 //   채권·금·유가는 하루 1회(UTC 0시대) 수집이라 세션 날짜가 어긋나므로 26시간 이내면 쓴다.
@@ -107,6 +116,7 @@ Deno.serve(async () => {
   const now = new Date();
   const fired: string[] = [];
   const failed: string[] = [];
+  const revertFailed: string[] = [];
   for (const alert of alerts) {
     const quote = latestBySymbol[alert.symbol];
     if (!quote || !isFresh(alert.symbol, alert.kind, quote.fetched_at, now)) continue;
@@ -132,8 +142,9 @@ Deno.serve(async () => {
           fired.push(`${alert.symbol}(price)`);
         } else {
           // 전송 실패: 다시 켜서 다음 실행에 재시도
-          await supabase.from("price_alerts").update({ enabled: true }).eq("id", alert.id).eq("enabled", false);
+          const ok = await revert(() => supabase.from("price_alerts").update({ enabled: true }).eq("id", alert.id).eq("enabled", false));
           failed.push(`${alert.symbol}(price)`);
+          if (!ok) revertFailed.push(`${alert.symbol}(price)`);
         }
       }
     } else {
@@ -155,11 +166,13 @@ Deno.serve(async () => {
       if (sent) {
         fired.push(`${alert.symbol}(pct)`);
       } else {
-        await supabase.from("price_alerts").update({ last_fired_session: prevSession }).eq("id", alert.id).eq("last_fired_session", session);
+        const ok = await revert(() => supabase.from("price_alerts").update({ last_fired_session: prevSession }).eq("id", alert.id).eq("last_fired_session", session));
         failed.push(`${alert.symbol}(pct)`);
+        if (!ok) revertFailed.push(`${alert.symbol}(pct)`);
       }
     }
   }
 
-  return Response.json({ checked: alerts.length, fired, failed });
+  if (revertFailed.length) console.error("price-alerts revert failed", revertFailed);
+  return Response.json({ checked: alerts.length, fired, failed, ...(revertFailed.length ? { revertFailed } : {}) });
 });

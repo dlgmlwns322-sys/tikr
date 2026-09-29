@@ -95,8 +95,9 @@ function loadHandler(path, { now, createClient, fetch }) {
 }
 
 // PostgREST 체인을 흉내 내는 최소 가짜 클라이언트. 요청을 기록한다.
-function fakeSupabase({ alerts, quotes }) {
+function fakeSupabase({ alerts, quotes, revertErrors = 0 }) {
   const log = [];
+  let revertLeft = revertErrors; // 되돌리기 갱신(enabled=true 또는 세션 조건)의 앞 N번을 DB 오류로
   const run = (q) => {
     if (q.table === 'price_alerts' && q.op === 'select') return { data: alerts.filter((a) => a.enabled), error: null };
     if (q.table === 'price_alerts' && q.op === 'update') {
@@ -108,6 +109,8 @@ function fakeSupabase({ alerts, quotes }) {
         if (op === 'or') return v === 'last_fired_session.is.null' ? a.last_fired_session != null : `last_fired_session.eq.${a.last_fired_session}` !== v;
         return false;
       });
+      const isRevert = q.value.enabled === true || q.filters.some(([op, k]) => op === 'eq' && k === 'last_fired_session');
+      if (isRevert && revertLeft > 0) { revertLeft--; return { data: null, error: { message: 'db down' } }; }
       if (miss) return { data: [], error: null };
       Object.assign(a, q.value);
       return { data: q.cols ? [{ id }] : null, error: null };
@@ -141,8 +144,8 @@ function fakeSupabase({ alerts, quotes }) {
   return { client, log };
 }
 
-async function runAlerts({ now, alerts, quotes, telegramFails = false }) {
-  const { client, log } = fakeSupabase({ alerts, quotes });
+async function runAlerts({ now, alerts, quotes, telegramFails = false, revertErrors = 0 }) {
+  const { client, log } = fakeSupabase({ alerts, quotes, revertErrors });
   const sent = [];
   const fetch = async (url, init) => {
     if (String(url).includes('api.telegram.org')) {
@@ -309,4 +312,23 @@ test('check-price-alerts: 정지 전 옛 시세로는 발동하지 않는다(등
   const r = await runAlerts({ now: KR_OPEN, alerts, quotes });
   assert.deepEqual(r.body.fired, ['KOSPI(pct)']);
   assert.equal(r.alerts[1].enabled, true);
+});
+
+test('check-price-alerts: 되돌리기 저장이 한 번 실패해도 재시도로 복구하고, 계속 실패하면 revertFailed로 알린다', async () => {
+  const mk = () => ({
+    alerts: [
+      { id: 1, symbol: 'AAPL', kind: 'pct', direction: 'below', threshold: -1, last_fired_session: null, enabled: true },
+      { id: 2, symbol: 'BTC_KRW', kind: 'price', direction: 'above', threshold: 100, last_fired_session: null, enabled: true },
+    ],
+    quotes: [
+      { symbol: 'AAPL', price: 100, percent_change: -5, fetched_at: '2026-09-25T19:59:00Z' },
+      { symbol: 'BTC_KRW', price: 150, percent_change: 0.5, fetched_at: '2026-09-26T02:45:00Z' },
+    ],
+  });
+  const once = await runAlerts({ now: WEEKEND, ...mk(), telegramFails: true, revertErrors: 1 });
+  assert.equal(once.body.revertFailed, undefined);
+  assert.equal(once.alerts[0].last_fired_session, null);
+  assert.equal(once.alerts[1].enabled, true);
+  const down = await runAlerts({ now: WEEKEND, ...mk(), telegramFails: true, revertErrors: 99 });
+  assert.deepEqual(down.body.revertFailed.sort(), ['AAPL(pct)', 'BTC_KRW(price)']);
 });
