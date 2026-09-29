@@ -102,7 +102,13 @@ function fakeSupabase({ alerts, quotes }) {
     if (q.table === 'price_alerts' && q.op === 'update') {
       const id = q.filters.find((f) => f[1] === 'id')[2];
       const a = alerts.find((x) => x.id === id);
-      if (q.filters.some((f) => f[1] === 'enabled') && !a.enabled) return { data: [], error: null };
+      // eq·or 조건이 현재 행과 맞지 않으면 갱신 0건(조건부 갱신 흉내)
+      const miss = q.filters.some(([op, k, v]) => {
+        if (op === 'eq' && k !== 'id') return a[k] !== v;
+        if (op === 'or') return v === 'last_fired_session.is.null' ? a.last_fired_session != null : `last_fired_session.eq.${a.last_fired_session}` !== v;
+        return false;
+      });
+      if (miss) return { data: [], error: null };
       Object.assign(a, q.value);
       return { data: q.cols ? [{ id }] : null, error: null };
     }
@@ -124,6 +130,7 @@ function fakeSupabase({ alerts, quotes }) {
         update(v) { q.op = 'update'; q.value = v; return b; },
         eq(k, v) { q.filters.push(['eq', k, v]); return b; },
         in(k, v) { q.filters.push(['in', k, v]); return b; },
+        or(v) { q.filters.push(['or', null, v]); return b; },
         order() { return b; },
         limit(n) { q.limit = n; return b; },
         then(res, rej) { log.push(q); return Promise.resolve(run(q)).then(res, rej); },
@@ -134,11 +141,15 @@ function fakeSupabase({ alerts, quotes }) {
   return { client, log };
 }
 
-async function runAlerts({ now, alerts, quotes }) {
+async function runAlerts({ now, alerts, quotes, telegramFails = false }) {
   const { client, log } = fakeSupabase({ alerts, quotes });
   const sent = [];
   const fetch = async (url, init) => {
-    if (String(url).includes('api.telegram.org')) sent.push(JSON.parse(init.body).text);
+    if (String(url).includes('api.telegram.org')) {
+      if (telegramFails) return new Response('{"ok":false}', { status: 500 });
+      sent.push(JSON.parse(init.body).text);
+      return new Response('{"ok":true}'); // 실제 Telegram 성공 응답 모양
+    }
     return new Response('{}');
   };
   const handler = loadHandler('supabase/functions/check-price-alerts/index.ts', { now, createClient: () => client, fetch });
@@ -264,4 +275,38 @@ test('macro-poll: 선행 호출이 분을 넘겨도 함수 시작분 기준으�
   // 09:59 시작 → 선행 호출 뒤 10:02가 돼도 시작분 59(슬롯 밖) 기준으로 불통과
   const early = await runMacro('2026-09-23T00:59:00Z', 60000);
   assert.ok(!early.includes('upbit-quote'));
+});
+
+test('check-price-alerts: 텔레그램 전송 실패면 발동 기록을 되돌려 다음 실행에 다시 보낸다', async () => {
+  const alerts = [
+    { id: 1, symbol: 'AAPL', kind: 'pct', direction: 'below', threshold: -1, last_fired_session: '2026-09-24', enabled: true },
+    { id: 2, symbol: 'BTC_KRW', kind: 'price', direction: 'above', threshold: 100, last_fired_session: null, enabled: true },
+  ];
+  const quotes = [
+    { symbol: 'AAPL', price: 100, percent_change: -5, fetched_at: '2026-09-25T19:59:00Z' },
+    { symbol: 'BTC_KRW', price: 150, percent_change: 0.5, fetched_at: '2026-09-26T02:45:00Z' },
+  ];
+  const r = await runAlerts({ now: WEEKEND, alerts, quotes, telegramFails: true });
+  assert.deepEqual(r.body.fired, []);
+  assert.deepEqual(r.body.failed.sort(), ['AAPL(pct)', 'BTC_KRW(price)']);
+  assert.equal(r.alerts[0].last_fired_session, '2026-09-24'); // 이전 값으로 복구
+  assert.equal(r.alerts[1].enabled, true); // 목표가 알림 다시 켜짐
+  const again = await runAlerts({ now: WEEKEND, alerts, quotes });
+  assert.deepEqual(again.body.fired.sort(), ['AAPL(pct)', 'BTC_KRW(price)']);
+});
+
+test('check-price-alerts: 정지 전 옛 시세로는 발동하지 않는다(등락률은 지금 세션, 목표가는 5일 이내)', async () => {
+  const alerts = [
+    { id: 1, symbol: 'AAPL', kind: 'pct', direction: 'below', threshold: -1, last_fired_session: null, enabled: true },
+    { id: 2, symbol: '005930.KS', kind: 'price', direction: 'above', threshold: 1, last_fired_session: null, enabled: true },
+    { id: 3, symbol: 'KOSPI', kind: 'pct', direction: 'above', threshold: 1, last_fired_session: null, enabled: true },
+  ];
+  const quotes = [
+    { symbol: 'AAPL', price: 100, percent_change: -5, fetched_at: '2026-09-21T19:59:00Z' }, // 지난 세션(뉴욕 9/21)
+    { symbol: '005930.KS', price: 70000, percent_change: 1, fetched_at: '2026-08-03T06:20:00Z' }, // 정지 전
+    { symbol: 'KOSPI', price: 3000, percent_change: 2, fetched_at: '2026-09-23T00:55:00Z' }, // 지금 세션
+  ];
+  const r = await runAlerts({ now: KR_OPEN, alerts, quotes });
+  assert.deepEqual(r.body.fired, ['KOSPI(pct)']);
+  assert.equal(r.alerts[1].enabled, true);
 });
