@@ -161,7 +161,7 @@ const APP_VER = 'v9.2';
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } },   // 실패(저장 공간 등)는 false
-  del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+  del(k) { try { localStorage.removeItem(k); return true; } catch (e) { return false; } },
 };
 const CFG = (() => { const c = store.get('sa_cfg', {}); return c && typeof c === 'object' ? c : {}; })();
 const SB_URL = CFG.url || DEFAULT_URL;
@@ -421,7 +421,8 @@ function leadHtml(m, s, k) {
                    : sf > 0 ? '나스닥 상승에 달러 강세가 더해져 원화 환산 수익률이 커졌어요' : '나스닥이 올랐어요';
     else if (si < 0) t = sf > 0 ? (sw > 0 ? '나스닥은 내렸지만 달러 강세로 원화 환산 수익률은 플러스예요' : '나스닥은 내렸지만 달러 강세로 원화 환산 손실은 줄었어요')
                    : sf < 0 ? '나스닥 하락에 달러 약세가 겹쳐 원화 환산 손실이 커졌어요' : '나스닥이 내렸어요';
-    else t = sf > 0 ? '나스닥은 보합이고 달러 강세로 원화 환산 수익률은 플러스예요' : sf < 0 ? '나스닥은 보합이고 달러 약세로 원화 환산 수익률은 마이너스예요' : '';
+    else t = sf > 0 && sw > 0 ? '나스닥은 보합이고 달러 강세로 원화 환산 수익률은 플러스예요'
+           : sf < 0 && sw < 0 ? '나스닥은 보합이고 달러 약세로 원화 환산 수익률은 마이너스예요' : '';
     if (!t) return '';
     return `<div class="lead">${t}</div><div class="leads num">${k} 나스닥 ${sp(i)} · 원/달러 ${sp(f)} → 원화 환산 ${sp(w)}</div>`;
   }
@@ -974,7 +975,7 @@ document.addEventListener('click', async e => {
     if (!store.set('sa_cfg', { url: u.trim(), key: k2.trim() })) { toast('기기에 저장하지 못했어요'); return; }
     toast('저장했어요, 새로고침합니다'); setTimeout(() => location.reload(), 700);
   }
-  else if (a === 'cfgreset') { store.del('sa_cfg'); toast('기본값으로 돌렸어요'); setTimeout(() => location.reload(), 700); }
+  else if (a === 'cfgreset') { if (!store.del('sa_cfg')) { toast('기기에 저장하지 못했어요'); return; } toast('기본값으로 돌렸어요'); setTimeout(() => location.reload(), 700); }
 });
 document.addEventListener('change', e => {
   const t = e.target;
