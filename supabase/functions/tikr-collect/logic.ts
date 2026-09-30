@@ -51,6 +51,20 @@ export function dropIncomplete<T extends { d: string }>(rows: T[], now: Date, ma
   return rows.filter((r) => r.d < z.date || (r.d === z.date && z.minutes >= READY_MIN[market]));
 }
 
+// ── 호출 권한 ────────────────────────────────────────
+// Authorization Bearer JWT의 role(서명 검증은 하지 않음 — 게이트웨이 verify_jwt가 먼저 검증한다는 전제).
+export function bearerRole(auth: string | null): string | null {
+  const part = (auth ?? "").replace(/^Bearer\s+/i, "").split(".")[1];
+  if (!part) return null;
+  try {
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const role = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)))?.role;
+    return typeof role === "string" ? role : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── KIS 응답 파싱 ────────────────────────────────────
 
 function ymd(s: unknown): string | null {

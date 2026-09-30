@@ -314,8 +314,10 @@ async function runPhase(job: string, d: string, ctx: Ctx, handle: (t: Task, c: C
 }
 
 Deno.serve(async (req) => {
-  // 크론(service_role)만 호출 — 앱 키로 부르면 KIS·Finnhub 호출 한도를 소모시킬 수 있다
-  if (req.headers.get("Authorization") !== `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`) {
+  // 크론(service_role)만 호출 — 앱 키로 부르면 KIS·Finnhub 호출 한도를 소모시킬 수 있다.
+  // 서명은 게이트웨이(verify_jwt 기본값 — --no-verify-jwt로 배포 금지)가 검증하고 여기선 역할만 본다.
+  // 크론에 저장된 service_role JWT는 함수 환경변수의 키와 글자가 다를 수 있다(2026-09-30 실측: 문자열 비교로 403).
+  if (L.bearerRole(req.headers.get("Authorization")) !== "service_role") {
     return Response.json({ error: "forbidden" }, { status: 403 });
   }
   const t0 = Date.now();

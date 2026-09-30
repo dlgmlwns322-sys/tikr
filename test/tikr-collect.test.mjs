@@ -30,6 +30,16 @@ test('미완성 봉 제외: 현지 오늘 봉은 마감 + 30분 전이면 버리
   assert.deepEqual(L.dropIncomplete(rows, at('2026-09-30T07:00:00Z'), 'KR').map((r) => r.d), ['2026-09-28', '2026-09-29', '2026-09-30']);
 });
 
+test('호출 권한: Bearer JWT의 role만 읽고, JWT가 아니거나 깨졌으면 없음', () => {
+  const jwt = (payload) => ['{"alg":"HS256"}', JSON.stringify(payload)]
+    .map((s) => Buffer.from(s).toString('base64url')).join('.') + '.sig';
+  assert.equal(L.bearerRole(`Bearer ${jwt({ role: 'service_role', iss: 'supabase' })}`), 'service_role');
+  assert.equal(L.bearerRole(`Bearer ${jwt({ role: 'anon' })}`), 'anon');
+  assert.equal(L.bearerRole('Bearer sb_secret_abc'), null);
+  assert.equal(L.bearerRole('Bearer a.%%%.c'), null);
+  assert.equal(L.bearerRole(null), null);
+});
+
 test('KIS 응답 파싱: 빈 칸·잘못된 날짜·0 이하 가격은 버리고, 거래량 빈 칸은 결측, 날짜 오름차순·중복 제거', () => {
   const us = L.parseUsDaily([
     { xymd: '20260929', clos: '254.4300', tvol: '41234567', tamt: '10498765432' },
