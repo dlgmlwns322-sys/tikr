@@ -18,64 +18,31 @@ test('24시간 자동 수집은 BTC_KRW 하나를 15분 간격으로 유지한�
   assert.match(upbit, /const MARKETS = \["KRW-BTC"\];/);
 });
 
-test('프론트 Supabase 조회는 필요한 필드와 1000행 상한만 사용한다', () => {
-  const html = read('index.html');
+// ---- 앱(index.html, v9.2) 조회량 ----
+// 2026-10-01 앱 교체: 큰 표(시세 기록·일봉)는 앱이 직접 읽지 않고 DB 공개 함수 결과 JSON(수 KB)만 받는다.
+// 옛 앱(legacy.html)의 차트 조회 시험은 앱 교체로 대상이 없어져 이 시험들로 바꿨다.
+const APP_RPCS = new Set(['tikr_home_json', 'tikr_discover_json', 'tikr_theme_json', 'tikr_stock_json', 'tikr_holdings_json',
+  'tikr_search_json', 'tikr_feedback_add', 'tikr_track_symbol', 'tikr_portfolio_score_json']);
 
-  assert.match(html, /select\('price,percent_change,fetched_at'\)[\s\S]*limit\(30\)/);
-  assert.doesNotMatch(html, /limit\(2000\)/);
-  // 오름차순+상한 조합은 최신 구간을 잘라내므로 금지 (시작점 1행 조회는 예외)
-  assert.doesNotMatch(html, /ascending:true\}\)\.limit\((?!1\))\d+\)/);
+test('앱은 큰 표를 직접 조회하지 않고 관심종목 표만 필요한 열로 읽는다', () => {
+  const html = read('index.html');
+  const tables = new Set([...html.matchAll(/\.from\('([a-z_]+)'\)/g)].map((m) => m[1]));
+  assert.deepEqual([...tables], ['watchlist']);
+  assert.doesNotMatch(html, /from\('watchlist'\)\.select\('\*'\)/);
+  assert.match(html, /from\('watchlist'\)\.select\('symbol,market,sort_order'\)/);
 });
 
-// loadChart 폴백의 quote_history 조회 구간(cutoff~rows)을 index.html에서 잘라 order·limit을 지키는 가짜 sb로 실행한다.
-async function runChartFallback(history, { now, period }) {
+test('앱이 부르는 DB 함수는 앱용 공개 함수뿐이다', () => {
   const html = read('index.html');
-  const start = html.indexOf("  const cutoff=new Date(Date.now()-PERIOD_MS[curPeriod])");
-  const end = html.indexOf('\n', html.indexOf('const rows=', start));
-  assert.ok(start > 0 && end > start, 'loadChart 폴백 조회 구간을 찾지 못함');
-  const snippet = html.slice(start, end);
-  const q = { filters: [] };
-  const b = {
-    select() { return b; },
-    eq(k, v) { q.filters.push(['eq', k, v]); return b; },
-    gte(k, v) { q.filters.push(['gte', k, v]); return b; },
-    order(col, opt) { q.order = [col, opt?.ascending !== false]; return b; },
-    limit(n) { q.limit = n; return b; },
-    then(res) {
-      const [col, asc] = q.order;
-      const rows = history
-        .filter((r) => q.filters.every(([op, k, v]) => (op === 'eq' ? r[k] === v : r[k] >= v)))
-        .sort((x, y) => (asc ? 1 : -1) * x[col].localeCompare(y[col]))
-        .slice(0, q.limit);
-      return Promise.resolve({ data: rows }).then(res);
-    },
-  };
-  const sb = { from: () => b };
-  const RealDate = Date;
-  class FakeDate extends RealDate {
-    constructor(...a) { super(...(a.length ? a : [now])); }
-    static now() { return new RealDate(now).getTime(); }
-  }
-  const PERIOD_MS = { '1Y': 365 * 86400000 };
-  const fn = new Function('sb', 'sym', 'curPeriod', 'PERIOD_MS', 'Date', `return (async()=>{${snippet}\nreturn {rows};})()`);
-  const { rows } = await fn(sb, 'BTC_KRW', period, PERIOD_MS, FakeDate);
-  return { rows, query: q };
-}
+  const rpcs = [...html.matchAll(/(?:\brpc|callRpc)\('([a-z_]+)'/g)].map((m) => m[1]);
+  assert.ok(rpcs.length >= 8);
+  for (const r of rpcs) assert.ok(APP_RPCS.has(r), r);
+});
 
-test('loadChart 폴백: 상한 초과 시에도 최신 행을 포함하고 오름차순으로 렌더한다', async () => {
-  const now = '2026-09-23T12:00:00Z';
-  // 1년 전부터 15분 간격 1500행 → 1000행 상한 초과
-  const base = new Date(now).getTime();
-  const history = Array.from({ length: 1500 }, (_, i) => ({
-    symbol: 'BTC_KRW', price: i, percent_change: 0,
-    fetched_at: new Date(base - i * 15 * 60000).toISOString(),
-  }));
-  const { rows, query } = await runChartFallback(history, { now, period: '1Y' });
-  assert.deepEqual(query.order, ['fetched_at', false]);
-  assert.equal(query.limit, 1000);
-  assert.equal(rows.length, 1000);
-  assert.equal(rows.at(-1).fetched_at, new Date(base).toISOString()); // 최신 행 포함
-  for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].fetched_at < rows[i].fetched_at); // 오름차순
+test('앱: 보유·관심 목록 60개·포트폴리오 점수 30평가일 상한', () => {
+  const html = read('index.html');
+  assert.match(html, /\.slice\(0, 60\)/);
+  assert.match(html, /tikr_portfolio_score_json[^\n]*p_n: 30/);
 });
 
 // ---- check-price-alerts / macro-poll 조회·응답량 회귀 검사 ----
