@@ -444,19 +444,22 @@ end $$;
 
 -- ── tikr-extra(service_role) ────────────────────────
 
--- 할 일 조회: VIX 마지막 날짜, 이름 없는 현재 구성원(미국은 KIS 거래소 코드 포함, 최대 60)
-create or replace function public.tikr_extra_state()
+-- 할 일 조회: VIX 마지막 날짜, 이름 없는 현재 구성원(미국은 KIS 거래소 코드 포함, 최대 60).
+--   p_after('시장:코드')보다 뒤만 — 이름을 못 찾는 종목이 앞에 쌓여도 다음 페이지로 넘어가게.
+create or replace function public.tikr_extra_state(p_after text default null)
 returns jsonb language sql stable security definer set search_path = '' as $$
   select jsonb_build_object(
     'vix_last', (select max(x.d) from tikr_score.macro_daily x where x.code = 'VIX'),
     'names_missing', coalesce((
-      select jsonb_agg(jsonb_build_object('market', z.market, 'symbol', z.symbol, 'excd', z.excd))
-      from (select distinct u.market, u.symbol, sy.excd
+      select jsonb_agg(jsonb_build_object('market', z.market, 'symbol', z.symbol, 'excd', z.excd, 'key', z.k)
+                       order by z.k collate "C")
+      from (select distinct u.market, u.symbol, sy.excd, (u.market || ':' || u.symbol) collate "C" as k
             from tikr_score.universe u
             left join tikr_score.symbols sy on sy.market = u.market and sy.symbol = u.symbol
             where u.active_to is null
               and not exists (select 1 from tikr_score.names n where n.market = u.market and n.symbol = u.symbol)
-            order by u.market, u.symbol
+              and (p_after is null or (u.market || ':' || u.symbol) collate "C" > p_after collate "C")
+            order by k
             limit 60) z), '[]'::jsonb))
 $$;
 
@@ -497,7 +500,7 @@ revoke all on function public.tikr_holdings_json(jsonb) from public;
 revoke all on function public.tikr_search_json(text) from public;
 revoke all on function public.tikr_feedback_add(text, text, text) from public;
 revoke all on function public.tikr_track_symbol(text, text, text, text) from public;
-revoke all on function public.tikr_extra_state() from public;
+revoke all on function public.tikr_extra_state(text) from public;
 revoke all on function public.tikr_extra_ingest(jsonb) from public;
 do $$
 begin
@@ -510,9 +513,9 @@ begin
     grant execute on function public.tikr_search_json(text) to anon, authenticated;
     grant execute on function public.tikr_feedback_add(text, text, text) to anon, authenticated;
     grant execute on function public.tikr_track_symbol(text, text, text, text) to anon, authenticated;
-    revoke all on function public.tikr_extra_state() from anon, authenticated;
+    revoke all on function public.tikr_extra_state(text) from anon, authenticated;
     revoke all on function public.tikr_extra_ingest(jsonb) from anon, authenticated;
-    grant execute on function public.tikr_extra_state() to service_role;
+    grant execute on function public.tikr_extra_state(text) to service_role;
     grant execute on function public.tikr_extra_ingest(jsonb) to service_role;
   end if;
 end $$;
