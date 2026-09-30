@@ -112,7 +112,7 @@ async function usDaily(excd: string, symbol: string, from: string | null): Promi
   let bymd = "";
   for (let page = 0; page < 8; page++) {
     const body = await kisGet("/uapi/overseas-price/v1/quotations/dailyprice", "HHDFS76240000",
-      { AUTH: "", EXCD: excd, SYMB: symbol, GUBN: "0", BYMD: bymd, MODP: "1" });
+      { AUTH: "", EXCD: excd, SYMB: L.kisUsSymbol(symbol), GUBN: "0", BYMD: bymd, MODP: "1" });
     const bars = L.parseUsDaily(body.output2);
     for (const b of bars) out.set(b.d, b);
     if (!from || bars.length === 0 || bars[0].d <= from) break;
@@ -227,6 +227,7 @@ async function handlePx(t: Task, ctx: Ctx): Promise<Outcome> {
     bars = await fetchBars(full, excd);
   }
   if (!bars.length) return ["retry", "시세 없음"];
+  if (!full) bars = L.recentForIngest(bars, t.last_d);
   const res = await ingestPx(t.market, t.symbol, bars, { full: full ? fullFrom : undefined, extra });
   ctx.stats.px += res.px ?? 0;
   if ((res.incomplete ?? []).length > 0) return ["retry", "전체 수집이 저장 구간을 다 덮지 못함"];
@@ -271,7 +272,7 @@ async function handleFund(t: Task, ctx: Ctx): Promise<Outcome> {
     let tomv: unknown = null, tomvCur: string | null = null;
     if (currency && currency !== "USD" && t.excd) {   // 비USD 보고(ADR)만 KIS 상장 주식 기준 시총으로 대체
       const o = (await kisGet("/uapi/overseas-price/v1/quotations/price-detail", "HHDFS76200200",
-        { AUTH: "", EXCD: t.excd, SYMB: t.symbol })).output ?? {};
+        { AUTH: "", EXCD: t.excd, SYMB: L.kisUsSymbol(t.symbol) })).output ?? {};
       tomv = o.tomv; tomvCur = typeof o.curr === "string" ? o.curr : null;
     }
     await rpc("tikr_collect_ingest", { p: { fund: [L.usFund(t.symbol, ctx.d, metric, currency, tomv, tomvCur)], ...extra } });

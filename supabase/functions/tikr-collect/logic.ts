@@ -65,6 +65,9 @@ export function bearerRole(auth: string | null): string | null {
   }
 }
 
+// KIS 해외 종목 코드: 클래스 주식은 '/'(BRK/B). 유니버스·Finnhub 표기는 '.'(BRK.B).
+export const kisUsSymbol = (s: string) => s.replace(/\./g, "/");
+
 // ── KIS 응답 파싱 ────────────────────────────────────
 
 function ymd(s: unknown): string | null {
@@ -106,6 +109,14 @@ export const parseOverseasChart = (o: unknown): Point[] =>
 // 국내 업종 FHKUP03500100: stck_bsop_date·bstp_nmix_prpr
 export const parseKrIndex = (o: unknown): Point[] =>
   toBars(o, { d: "stck_bsop_date", c: "bstp_nmix_prpr" }).map((b) => ({ d: b.d, v: b.close }));
+
+// 매일 수집에서 DB로 보낼 봉: 마지막 저장일 7일 전부터(겹침 약 5거래일 — 수정주가 변경 감지와 빈 날 채우기는 유지,
+// 함수→DB 전송은 최소). 저장 이력이 없으면(전체 수집) 그대로.
+export function recentForIngest<T extends { d: string }>(bars: T[], lastD: string | null, overlapDays = 7): T[] {
+  if (!lastD) return bars;
+  const from = addDays(lastD, -overlapDays);
+  return bars.filter((b) => b.d >= from);
+}
 
 // ── 지수·환율 겹침 수집 ───────────────────────────────
 // KIS 차트 API는 요청마다 구간 경계 날짜를 다르게 빠뜨린다 → 25일 창을 20일씩 옮겨 겹치게 받고 합친다.

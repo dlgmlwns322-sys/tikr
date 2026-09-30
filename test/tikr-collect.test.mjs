@@ -40,6 +40,18 @@ test('호출 권한: Bearer JWT의 role만 읽고, JWT가 아니거나 깨졌으
   assert.equal(L.bearerRole(null), null);
 });
 
+test('매일 수집 전송 최소화: 마지막 저장일 7일 전부터만 보내고, 이력이 없으면 전부', () => {
+  const bars = ['2026-09-10', '2026-09-18', '2026-09-19', '2026-09-25', '2026-09-29'].map((d) => ({ d }));
+  assert.deepEqual(L.recentForIngest(bars, '2026-09-26').map((b) => b.d), ['2026-09-19', '2026-09-25', '2026-09-29']);
+  assert.deepEqual(L.recentForIngest(bars, '2026-08-01').map((b) => b.d), bars.map((b) => b.d));   // 긴 공백은 전부(빈 날 채움)
+  assert.equal(L.recentForIngest(bars, null).length, 5);
+});
+
+test('KIS 해외 종목 코드: 클래스 주식은 점을 슬래시로(BRK.B → BRK/B), 일반 종목은 그대로', () => {
+  assert.equal(L.kisUsSymbol('BRK.B'), 'BRK/B');
+  assert.equal(L.kisUsSymbol('AAPL'), 'AAPL');
+});
+
 test('KIS 응답 파싱: 빈 칸·잘못된 날짜·0 이하 가격은 버리고, 거래량 빈 칸은 결측, 날짜 오름차순·중복 제거', () => {
   const us = L.parseUsDaily([
     { xymd: '20260929', clos: '254.4300', tvol: '41234567', tamt: '10498765432' },
