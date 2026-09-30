@@ -160,7 +160,7 @@ const DEFAULT_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 const APP_VER = 'v9.2';
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } },   // 실패(저장 공간 등)는 false
   del(k) { try { localStorage.removeItem(k); } catch (e) {} },
 };
 const CFG = (() => { const c = store.get('sa_cfg', {}); return c && typeof c === 'object' ? c : {}; })();
@@ -209,7 +209,7 @@ function getHoldings() {
   return a.filter(h => h && (h.market === 'US' || h.market === 'KR') && typeof h.symbol === 'string' && h.symbol && isN(h.qty) && h.qty > 0)
     .map(h => ({ market: h.market, symbol: h.symbol, name: typeof h.name === 'string' ? h.name : '', bench: typeof h.bench === 'string' ? h.bench : '', qty: h.qty, avg: isN(h.avg) && h.avg > 0 ? h.avg : null }));
 }
-const setHoldings = a => { store.set('tikr_holdings', a); invalidate('mine'); };
+const setHoldings = a => { const ok = store.set('tikr_holdings', a); invalidate('mine'); return ok; };
 function getRules() { const r = store.get('tikr_rules', {}); const w = r && isN(r.max_weight) ? r.max_weight : 30; return { max_weight: Math.min(100, Math.max(5, w)) }; }
 
 // ═══════════════ 데이터 ═══════════════
@@ -220,9 +220,11 @@ async function cached(key, ttl, fn) {
   if (c && c.p) return c.p;
   if (c && Date.now() - c.t < ttl) return c.v;
   const p = (async () => fn())();
-  CACHE.set(key, { p });
-  try { const v = await p; CACHE.set(key, { t: Date.now(), v }); return v; }
-  catch (e) { CACHE.delete(key); throw e; }
+  const entry = { p };
+  CACHE.set(key, entry);
+  // 도는 중에 무효화(invalidate)됐으면 늦게 온 옛 결과로 캐시를 다시 채우지 않는다
+  try { const v = await p; if (CACHE.get(key) === entry) CACHE.set(key, { t: Date.now(), v }); return v; }
+  catch (e) { if (CACHE.get(key) === entry) CACHE.delete(key); throw e; }
 }
 const peek = key => { const c = CACHE.get(key); return c && 'v' in c ? c.v : undefined; };
 async function callRpc(fn, args) {
@@ -296,7 +298,7 @@ function computeMine(H, hj) {
     const gain = rows.reduce((s, x) => s + x.h.qty * (x.px.v - x.h.avg) * fOf(x.h.market), 0);
     tp = cost > 0 ? gain / cost : null;
   }
-  return { rows, total: valued.length ? total : null, tp, fx, by };
+  return { rows, total: valued.length ? total : null, tp, fx, by, unvalued: rows.length - valued.length };
 }
 function nameOf(by, h) {
   const it = by && by[keyOf(h)];
@@ -412,16 +414,31 @@ function leadHtml(m, s, k) {
     const i = agoChg(s.COMP, k), f = agoChg(s.USDKRW, k);
     if (!isN(i) || !isN(f)) return '';
     const w = (1 + i) * (1 + f) - 1;
-    const t = i >= 0 ? (f < 0 ? '나스닥은 올랐지만 달러 약세로 원화 환산 수익률은 줄었어요' : '나스닥 상승에 달러 강세가 더해져 원화 환산 수익률이 커졌어요')
-                     : (f > 0 ? '나스닥은 내렸지만 달러 강세로 원화 환산 손실은 줄었어요' : '나스닥 하락에 달러 약세가 겹쳐 원화 환산 손실이 커졌어요');
+    // 표시 기준(소수 1자리 %)으로 0이면 보합 — 보합끼리는 헤드라인 생략, 방향 문구는 원화 환산 결과 부호에 맞춘다
+    const si = sg(i), sf = sg(f), sw = sg(w);
+    let t = '';
+    if (si > 0) t = sf < 0 ? (sw < 0 ? '나스닥은 올랐지만 달러 약세로 원화 환산 수익률은 마이너스예요' : '나스닥은 올랐지만 달러 약세로 원화 환산 수익률은 줄었어요')
+                   : sf > 0 ? '나스닥 상승에 달러 강세가 더해져 원화 환산 수익률이 커졌어요' : '나스닥이 올랐어요';
+    else if (si < 0) t = sf > 0 ? (sw > 0 ? '나스닥은 내렸지만 달러 강세로 원화 환산 수익률은 플러스예요' : '나스닥은 내렸지만 달러 강세로 원화 환산 손실은 줄었어요')
+                   : sf < 0 ? '나스닥 하락에 달러 약세가 겹쳐 원화 환산 손실이 커졌어요' : '나스닥이 내렸어요';
+    else t = sf > 0 ? '나스닥은 보합이고 달러 강세로 원화 환산 수익률은 플러스예요' : sf < 0 ? '나스닥은 보합이고 달러 약세로 원화 환산 수익률은 마이너스예요' : '';
+    if (!t) return '';
     return `<div class="lead">${t}</div><div class="leads num">${k} 나스닥 ${sp(i)} · 원/달러 ${sp(f)} → 원화 환산 ${sp(w)}</div>`;
   }
   const a = agoChg(s.KOSPI, k), b = agoChg(s.KOSDAQ, k);
   if (!isN(a)) return '';
-  if (!isN(b)) return `<div class="lead">${a >= 0 ? '코스피가 올랐어요' : '코스피가 내렸어요'}</div><div class="leads num">${k} 코스피 ${sp(a)}</div>`;
-  const t = a >= 0 && b >= 0 ? '코스피·코스닥 모두 올랐어요' : a < 0 && b < 0 ? '코스피·코스닥 모두 내렸어요' : a >= 0 ? '코스피는 올랐지만 코스닥은 내렸어요' : '코스피는 내렸지만 코스닥은 올랐어요';
+  const sa = sg(a), sb2 = sg(b);
+  const word = (x, n) => x > 0 ? n + '가 올랐어요' : x < 0 ? n + '가 내렸어요' : n + '는 보합이에요';
+  if (!isN(b)) return `<div class="lead">${word(sa, '코스피')}</div><div class="leads num">${k} 코스피 ${sp(a)}</div>`;
+  const t = sa > 0 && sb2 > 0 ? '코스피·코스닥 모두 올랐어요' : sa < 0 && sb2 < 0 ? '코스피·코스닥 모두 내렸어요'
+          : sa === 0 && sb2 === 0 ? '코스피·코스닥 모두 보합이에요'
+          : sa > 0 && sb2 < 0 ? '코스피는 올랐지만 코스닥은 내렸어요' : sa < 0 && sb2 > 0 ? '코스피는 내렸지만 코스닥은 올랐어요'
+          : sa === 0 ? (sb2 > 0 ? '코스피는 보합, 코스닥은 올랐어요' : '코스피는 보합, 코스닥은 내렸어요')
+          : (sa > 0 ? '코스피는 올랐고 코스닥은 보합이에요' : '코스피는 내렸고 코스닥은 보합이에요');
   return `<div class="lead">${t}</div><div class="leads num">${k} 코스피 ${sp(a)} · 코스닥 ${sp(b)}</div>`;
 }
+// 표시 기준 부호: 소수 1자리 %로 반올림해 0이면 0(보합)
+function sg(x) { if (!isN(x)) return 0; const r = Number((x * 100).toFixed(1)); return r > 0 ? 1 : r < 0 ? -1 : 0; }
 function zoneCell(l, x) { if (!x || !isN(x.v)) return cell(l, '', ''); return cell(l, Zc(x.pos), isN(x.pos) ? `52주 위치 ${pos100(x.pos)}` : ''); }
 function bondCell(l, x, k) {
   if (!x || !isN(x.v)) return cell(l, '', '');
@@ -655,12 +672,14 @@ async function toggleWatch(m, sym, bench) {
 function checksOf(md, latest, discs) {
   const { C, H } = md; const out = []; const lim = getRules().max_weight;
   const nm = x => nameOf(C.by, x.h);
-  const over = C.rows.filter(x => isN(x.w) && x.w * 100 > lim).sort((a, b) => b.w - a.w);
+  // 평가 못 한 보유가 있으면 비중이 부풀려지므로 집중 판정은 하지 않는다(공란)
+  const over = C.unvalued > 0 ? [] : C.rows.filter(x => isN(x.w) && x.w * 100 > lim).sort((a, b) => b.w - a.w);
   if (over.length) out.push({ k: 'w', c: '집중',
     t: over.slice(0, 2).map(x => `${nm(x)} ${(x.w * 100).toFixed(1)}%`).join(' · ') + (over.length > 2 ? ` 외 ${over.length - 2}` : ''),
     s: `단일 종목 한도 ${lim}% 초과` + (latest && isN(latest.s_div) ? ` · 분산 ${Math.round(latest.s_div)}/25` : ''),
     short: `${nm(over[0])} 비중 ${(over[0].w * 100).toFixed(1)}% · 한도 ${lim}% 초과` });
-  const low = C.rows.filter(x => { const mm = x.it && x.it.mom; return mm && isN(mm.rk) && isN(mm.n) && mm.n > 0 && mm.rk / mm.n >= 0.9; });
+  // 하위 10% = 순위(1이 최고)가 전체의 90% 초과(10종목이면 10위만)
+  const low = C.rows.filter(x => { const mm = x.it && x.it.mom; return mm && isN(mm.rk) && isN(mm.n) && mm.n > 0 && mm.rk > mm.n * 0.9; });
   if (low.length) { const t = low.map(nm).join(' · ') + ' 모멘텀 하위 10%'; out.push({ k: 'w', c: '모멘텀', t, s: `합산 비중 ${(low.reduce((s, x) => s + (isN(x.w) ? x.w : 0), 0) * 100).toFixed(1)}%`, short: t }); }
   const themes = new Set(C.rows.map(x => x.it && x.it.theme).filter(Boolean));
   const hk = new Set(H.map(keyOf));
@@ -701,7 +720,7 @@ async function scMine(r, my, reason) {
   } else {
     const P = psRows(ps); const latest = P[P.length - 1]; const prev = P[P.length - 2];
     h += '<div class="panel"><div class="g2 sum">'
-      + `<div class="cell"><div class="l">평가금액</div><div class="v big num">${C.total != null ? esc(fN(C.total, 0) + '원') : '&nbsp;'}</div></div>`
+      + `<div class="cell"><div class="l">평가금액</div><div class="v big num">${C.total != null ? esc(fN(C.total, 0) + '원') : '&nbsp;'}</div>${C.unvalued > 0 && C.total != null ? `<div class="s">일부 제외 ${C.unvalued}</div>` : ''}</div>`
       + `<div class="cell" style="text-align:right"><div class="l">평가손익률</div><div class="v big num ${clx(C.tp)}">${C.tp != null ? esc(pct(C.tp)) : '&nbsp;'}</div></div></div>`;
     if (ps && ps.__err) h += '<div class="row"><span class="mu" style="font-size:var(--f2)">점수를 불러오지 못했어요</span><button class="hbtn" data-act="retry">다시 시도</button></div>';
     else if (latest && isN(latest.total)) {
@@ -842,7 +861,7 @@ async function addPick(btn) {
   if (H.length >= 50) { toast('보유 종목은 50개까지예요'); return; }
   if (btn) btn.disabled = true;
   H.push({ market: x.market, symbol: x.symbol, name: x.name || '', bench: x.bench || '', qty: q, avg: a && a > 0 ? a : null });
-  setHoldings(H);
+  if (!setHoldings(H)) { toast('기기에 저장하지 못했어요'); if (btn) btn.disabled = false; return; }
   let msg = '추가했어요';
   try {
     const res = await callRpc('tikr_track_symbol', { p_market: x.market, p_symbol: x.symbol, p_name: x.name || null, p_bench: x.market === 'KR' ? (x.bench || null) : null });
@@ -863,7 +882,12 @@ function editField(inp) {
     if (v !== null && (!isN(v) || v < 0 || v > 1e12)) { toast('평단은 숫자로 적어 주세요'); inp.value = x.avg != null ? String(x.avg) : ''; return; }
     const nv = v && v > 0 ? v : null; if (nv === x.avg) return; x.avg = nv;
   }
-  setHoldings(H); toast('저장했어요');
+  if (!setHoldings(H)) {   // 저장 실패면 입력을 저장된 값으로 되돌린다
+    const old = getHoldings()[i];
+    inp.value = !old ? '' : inp.dataset.f === 'qty' ? String(old.qty) : old.avg != null ? String(old.avg) : '';
+    toast('기기에 저장하지 못했어요'); return;
+  }
+  toast('저장했어요');
 }
 
 // ═══════════════ 기준 설정·연결 설정 ═══════════════
@@ -874,7 +898,8 @@ function scRules(r, my) {
 function saveRules(inp) {
   const v = parseNum(inp.value);
   if (!isN(v) || v < 5 || v > 100) { toast('5~100 사이로 적어 주세요'); inp.value = String(getRules().max_weight); return; }
-  store.set('tikr_rules', { max_weight: Math.round(v) }); inp.value = String(Math.round(v)); toast('저장했어요');
+  if (!store.set('tikr_rules', { max_weight: Math.round(v) })) { inp.value = String(getRules().max_weight); toast('기기에 저장하지 못했어요'); return; }
+  inp.value = String(Math.round(v)); toast('저장했어요');
 }
 function scSettings(r, my) {
   paint(my, nav('연결 설정', '') + `<div class="body"><div class="panel"><div class="pad"><label class="lab">Supabase URL<input id="cu" class="inp" autocomplete="off" value="${esc(CFG.url || '')}" placeholder="${esc(DEFAULT_URL)}"></label><label class="lab" style="margin-top:12px">anon key<input id="ck" class="inp" autocomplete="off" value="${esc(CFG.key || '')}" placeholder="기본값"></label></div><button class="btn" data-act="cfgsave">저장</button><button class="btn" data-act="cfgreset" style="color:var(--t2);border-top:1px solid var(--div)">기본값으로</button></div></div>`);
@@ -926,12 +951,13 @@ document.addEventListener('click', async e => {
   else if (a === 'del') {
     const i = Number(el.dataset.i);
     if (S.delArm !== i) { S.delArm = i; el.textContent = '삭제 확인'; setTimeout(() => { if (S.delArm === i) { S.delArm = null; if (cur.name === 'edit') route('state'); } }, 3000); return; }
-    S.delArm = null; const H = getHoldings(); H.splice(i, 1); setHoldings(H); toast('삭제했어요'); route('state');
+    S.delArm = null; const H = getHoldings(); H.splice(i, 1); toast(setHoldings(H) ? '삭제했어요' : '기기에 저장하지 못했어요'); route('state');
   }
   else if (a === 'cfgsave') {
     const u = (document.getElementById('cu') || {}).value || ''; const k2 = (document.getElementById('ck') || {}).value || '';
     if (u.trim() && !/^https:\/\/[^\s/]+/.test(u.trim())) { toast('https 주소로 적어 주세요'); return; }
-    store.set('sa_cfg', { url: u.trim(), key: k2.trim() }); toast('저장했어요, 새로고침합니다'); setTimeout(() => location.reload(), 700);
+    if (!store.set('sa_cfg', { url: u.trim(), key: k2.trim() })) { toast('기기에 저장하지 못했어요'); return; }
+    toast('저장했어요, 새로고침합니다'); setTimeout(() => location.reload(), 700);
   }
   else if (a === 'cfgreset') { store.del('sa_cfg'); toast('기본값으로 돌렸어요'); setTimeout(() => location.reload(), 700); }
 });
