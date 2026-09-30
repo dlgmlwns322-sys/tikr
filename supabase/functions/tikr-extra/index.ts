@@ -32,12 +32,13 @@ async function rpc(name: string, args: Record<string, unknown> = {}) {
 }
 
 let kisToken: string | null = null;
-async function token(): Promise<string> {
+async function token(timeLeft: () => number): Promise<string> {
   if (kisToken) return kisToken;
+  if (timeLeft() < L.START_MIN_MS) throw new Error("시간 부족");
   const res = await fetch(`${SUPABASE_URL}/functions/v1/kis-auth`, {
     method: "POST",
     headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
-    signal: AbortSignal.timeout(HTTP_MS),
+    signal: AbortSignal.timeout(L.reqTimeout(timeLeft())),
   });
   if (!res.ok) { await res.body?.cancel(); throw new Error(`kis-auth 호출 실패 (${res.status})`); }
   kisToken = (await res.json()).access_token;
@@ -46,10 +47,14 @@ async function token(): Promise<string> {
 }
 
 // KIS GET: 초당 거래건수 초과(EGW00201)·서버 오류는 1·2초 뒤 재시도, 토큰 만료·무효(EGW00123·EGW00121)는
-// 토큰을 다시 받아 재시도. 그 밖의 실패(없는 종목 등)는 null — 다음 후보로.
+// 토큰을 다시 받아 재시도. 응답은 왔는데 KIS가 결과 없음(rt_cd ≠ 0)이면 null — 다음 후보로.
+// 본문을 못 읽은 경우(제한 시간·깨진 응답)는 '없음'이 아니라 오류로 올린다(miss로 7일 빠지지 않게).
+// 남은 예산이 적으면 시작하지 않고, 요청 제한 시간은 저장 몫(15초)을 남기게 줄인다.
 async function kisGet(path: string, trId: string, params: Record<string, string>, timeLeft: () => number): Promise<any | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (timeLeft() < 12_000) throw new Error("시간 부족");
+    if (timeLeft() < L.START_MIN_MS) throw new Error("시간 부족");
+    const tk = await token(timeLeft);
+    if (timeLeft() < L.START_MIN_MS) throw new Error("시간 부족");
     const wait = lastKis + KIS_GAP_MS - Date.now();
     if (wait > 0) await sleep(wait);
     lastKis = Date.now();
@@ -57,12 +62,17 @@ async function kisGet(path: string, trId: string, params: Record<string, string>
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const res = await fetch(url, {
       headers: {
-        "content-type": "application/json", authorization: `Bearer ${await token()}`,
+        "content-type": "application/json", authorization: `Bearer ${tk}`,
         appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: trId, custtype: "P",
       },
-      signal: AbortSignal.timeout(HTTP_MS),
+      signal: AbortSignal.timeout(L.reqTimeout(timeLeft())),
     });
-    const body = await res.json().catch(() => null);
+    let body: any;
+    try { body = await res.json(); } catch { body = undefined; }
+    if (body === undefined) {
+      if (res.status >= 500) { await sleep(1_000 * (attempt + 1)); continue; }
+      throw new Error(`KIS ${trId} 응답 읽기 실패 (${res.status})`);
+    }
     if (res.ok && body?.rt_cd === "0") return body;
     if (body?.msg_cd === "EGW00123" || body?.msg_cd === "EGW00121") { kisToken = null; continue; }
     if (body?.msg_cd !== "EGW00201" && res.status < 500) return null;
@@ -106,7 +116,7 @@ async function doVix(stats: Record<string, number>) {
 // 종목 하나에서 오류가 나면 그때까지 찾은 이름·miss를 저장하고 멈춘다(다음 호출이 잇는다).
 async function doNames(stats: Record<string, number>, timeLeft: () => number) {
   let after: string | null = null;
-  while (timeLeft() > 20_000) {
+  while (timeLeft() > L.START_MIN_MS + L.SAVE_RESERVE_MS) {
     const state = await rpc("tikr_extra_state", { p_after: after });
     const todo = (state?.names_missing ?? []) as { market: "US" | "KR"; symbol: string; excd: string | null; key: string }[];
     if (todo.length === 0) return;
@@ -114,7 +124,7 @@ async function doNames(stats: Record<string, number>, timeLeft: () => number) {
     const miss: [string, string][] = [];
     let failed: unknown = null;
     for (const t of todo) {
-      if (timeLeft() < 12_000) break;
+      if (timeLeft() < L.START_MIN_MS) break;   // 저장할 시간을 남기고 멈춘다
       try {
         const name = t.market === "US" ? await usName(t.symbol, t.excd, timeLeft) : await krName(t.symbol, timeLeft);
         if (name) names.push([t.market, t.symbol, name]);

@@ -19,6 +19,16 @@ export function maskSecrets(msg: string): string {
   return msg.replace(/([?&](?:api_key|token)=)[^&\s)"']+/gi, "$1***");
 }
 
+// ── 시간 예산 ─────────────────────────────────────
+// 새 KIS 조회(토큰 발급 포함)를 시작할 최소 남은 시간, 저장(ingest) 몫으로 남길 시간
+export const START_MIN_MS = 25_000;
+export const SAVE_RESERVE_MS = 15_000;
+// 요청 하나의 제한 시간: 저장 몫을 남기고 2~10초(cap) 사이
+export function reqTimeout(left: number, cap = 10_000): number {
+  if (!Number.isFinite(left)) return 2_000;
+  return Math.max(2_000, Math.min(cap, left - SAVE_RESERVE_MS));
+}
+
 // ── 날짜 ─────────────────────────────────────────
 export function addDays(d: string, n: number): string {
   const t = new Date(d + "T00:00:00Z");

@@ -63,3 +63,12 @@ test('pickName: 한글 이름 우선·공백 정리·60자·없으면 null', () 
   assert.equal(L.pickName(null, 'US'), null);
   assert.equal(L.pickName({}, 'KR'), null);
 });
+
+test('reqTimeout: 저장 몫 15초를 남기고 2~10초(cap)', () => {
+  assert.equal(L.reqTimeout(110_000), 10_000);
+  assert.equal(L.reqTimeout(22_000), 7_000);
+  assert.equal(L.reqTimeout(10_000), 2_000);
+  assert.equal(L.reqTimeout(Number.NaN), 2_000);
+  assert.equal(L.reqTimeout(60_000, 20_000), 20_000);
+  assert.ok(L.START_MIN_MS > L.SAVE_RESERVE_MS);
+});

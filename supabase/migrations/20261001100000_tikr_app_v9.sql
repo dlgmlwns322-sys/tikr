@@ -103,7 +103,7 @@ returns jsonb language sql immutable as $$
   ), ago as (
     select k.k, a.d, a.v
     from l cross join (values ('1M', 30, 7), ('3M', 91, 10), ('1Y', 365, 14)) as k(k, days, tol)
-    left join lateral (select s.d, s.v from s where s.d <= l.d - k.days and s.d > l.d - k.days - k.tol
+    left join lateral (select s.d, s.v from s where s.d <= l.d - k.days and s.d >= l.d - k.days - k.tol
                        order by s.d desc limit 1) a on true
   ), r as (
     select s.d,
@@ -501,27 +501,30 @@ create or replace function public.tikr_extra_ingest(p jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare n_macro int := 0; n_names int := 0; n_miss int := 0;
 begin
+  -- 같은 키가 한 번에 두 번 오면(ON CONFLICT가 같은 행을 두 번 못 고침) 뒤의 것만 — 호출 전체 실패 방지
   insert into tikr_score.macro_daily (code, d, value)
-  select e->>0, (e->>1)::date, (e->>2)::float8
-  from jsonb_array_elements(coalesce(p->'macro', '[]'::jsonb)) as e
-  where jsonb_typeof(e) = 'array' and e->>0 = 'VIX'
-    and (e->>1) ~ '^\d{4}-\d{2}-\d{2}$' and (e->>2) ~ '^[0-9]+(\.[0-9]+)?$' and (e->>2)::float8 > 0
+  select distinct on (x.e->>0, x.e->>1) x.e->>0, (x.e->>1)::date, (x.e->>2)::float8
+  from jsonb_array_elements(coalesce(p->'macro', '[]'::jsonb)) with ordinality as x(e, i)
+  where jsonb_typeof(x.e) = 'array' and x.e->>0 = 'VIX'
+    and (x.e->>1) ~ '^\d{4}-\d{2}-\d{2}$' and (x.e->>2) ~ '^[0-9]+(\.[0-9]+)?$' and (x.e->>2)::float8 > 0
+  order by x.e->>0, x.e->>1, x.i desc
   on conflict (code, d) do update set value = excluded.value;
   get diagnostics n_macro = row_count;
 
   insert into tikr_score.names (market, symbol, name, source)
-  select e->>0, e->>1, left(btrim(e->>2), 60), 'kis'
-  from jsonb_array_elements(coalesce(p->'names', '[]'::jsonb)) as e
-  where jsonb_typeof(e) = 'array' and e->>0 in ('US', 'KR') and length(coalesce(e->>1, '')) between 1 and 12
-    and length(btrim(coalesce(e->>2, ''))) between 1 and 60
+  select distinct on (x.e->>0, x.e->>1) x.e->>0, x.e->>1, left(btrim(x.e->>2), 60), 'kis'
+  from jsonb_array_elements(coalesce(p->'names', '[]'::jsonb)) with ordinality as x(e, i)
+  where jsonb_typeof(x.e) = 'array' and x.e->>0 in ('US', 'KR') and length(coalesce(x.e->>1, '')) between 1 and 12
+    and length(btrim(coalesce(x.e->>2, ''))) between 1 and 60
+  order by x.e->>0, x.e->>1, x.i desc
   on conflict (market, symbol) do update set name = excluded.name, source = 'kis', updated_at = now()
     where tikr_score.names.source <> 'manual';
   get diagnostics n_names = row_count;
 
   insert into tikr_score.name_miss (market, symbol, tried_at)
-  select e->>0, e->>1, now()
-  from jsonb_array_elements(coalesce(p->'miss', '[]'::jsonb)) as e
-  where jsonb_typeof(e) = 'array' and e->>0 in ('US', 'KR') and length(coalesce(e->>1, '')) between 1 and 12
+  select distinct x.e->>0, x.e->>1, now()
+  from jsonb_array_elements(coalesce(p->'miss', '[]'::jsonb)) as x(e)
+  where jsonb_typeof(x.e) = 'array' and x.e->>0 in ('US', 'KR') and length(coalesce(x.e->>1, '')) between 1 and 12
   on conflict (market, symbol) do update set tried_at = now();
   get diagnostics n_miss = row_count;
 
