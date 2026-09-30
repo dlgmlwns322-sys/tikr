@@ -302,7 +302,7 @@ async function runPhase(job: string, d: string, ctx: Ctx, handle: (t: Task, c: C
       try {
         out = await handle(t, c);
       } catch (e) {
-        const msg = String((e as Error).message ?? e).slice(0, 200);
+        const msg = L.maskSecrets(String((e as Error).message ?? e)).slice(0, 200);
         if (ctx.errors.length < 5) ctx.errors.push(`${job} ${t.symbol}: ${msg}`);
         out = [t.tries >= 3 ? "failed" : "retry", msg];
       }
@@ -370,7 +370,7 @@ Deno.serve(async (req) => {
       return Response.json({ error: "job은 kr·us·fund·backfill 중 하나" }, { status: 400 });
     }
   } catch (e) {
-    ctx.errors.push(String((e as Error).message ?? e).slice(0, 200));
+    ctx.errors.push(L.maskSecrets(String((e as Error).message ?? e)).slice(0, 200));
   }
 
   const summary = { job, d, ms: Date.now() - t0, ...stats, confirm, errors: ctx.errors };

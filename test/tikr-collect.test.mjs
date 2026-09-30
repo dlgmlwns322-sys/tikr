@@ -136,3 +136,14 @@ test('재무 매핑: 시총은 Finnhub USD 우선·비USD만 KIS 대체, PER 이
   assert.deepEqual([kr.rev_growth, kr.roe, kr.debt_ratio_x, kr.market_cap_krw, kr.equity_positive, kr.pe_now],
     [7.1, 9, 0.275, 4.25e14, true, 14.4]);
 });
+
+test('maskSecrets: fetch 예외 메시지의 Finnhub 키(token=)를 가린다', () => {
+  const m = 'error sending request for url (https://finnhub.io/api/v1/stock/metric?symbol=AAPL&metric=all&token=abc123XYZ): client error (Connect)';
+  const out = L.maskSecrets(m);
+  assert.ok(!out.includes('abc123XYZ'));
+  assert.ok(out.endsWith('&token=***): client error (Connect)'));
+  assert.equal(L.maskSecrets('https://finnhub.io/api/v1/quote?token=k1&symbol=A'), 'https://finnhub.io/api/v1/quote?token=***&symbol=A');
+  assert.equal(L.maskSecrets('KIS FHKST01010100 500 EGW00201'), 'KIS FHKST01010100 500 EGW00201');
+  // 200자로 자르기 전에 가린다 — 잘린 뒤에도 키 조각이 남지 않는다
+  assert.ok(!L.maskSecrets('x'.repeat(170) + '?token=abcdefghijklmnopqrstuvwxyz').slice(0, 200).includes('abcdefghij'));
+});

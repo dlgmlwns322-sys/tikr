@@ -65,6 +65,12 @@ export function bearerRole(auth: string | null): string | null {
   }
 }
 
+// 오류 메시지 비밀 가리기: fetch 네트워크 예외 메시지엔 요청 URL이 붙는다(Finnhub 키는 URL의 token=).
+// 작업 기록(note)·요약·크론 응답에 남기기 전에 가린다(2026-10-01 검토).
+export function maskSecrets(msg: string): string {
+  return msg.replace(/([?&]token=)[^&\s)"']+/gi, "$1***");
+}
+
 // KIS 해외 종목 코드: 클래스 주식은 '/'(BRK/B). 유니버스·Finnhub 표기는 '.'(BRK.B).
 export const kisUsSymbol = (s: string) => s.replace(/\./g, "/");
 
