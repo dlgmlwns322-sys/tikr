@@ -4,6 +4,7 @@ import * as L from "./logic.ts";
 // 티커 앱 v9 보조 수집 — VIX(FRED VIXCLS)·종목 한글 이름(KIS 상품 정보). 규칙: 볼트 「앱_v9_구현」.
 //   · 크론(service_role)만 호출. DB는 public.tikr_extra_state(할 일 조회)·tikr_extra_ingest(넣기)만 쓴다.
 //   · 전송량: DB에서 읽는 건 할 일 목록(최대 60종목)뿐. 외부 API 응답은 전송량에 안 잡힌다.
+//   · 모든 외부 요청·RPC에 제한 시간 — 한 요청이 멈춰도 예산(110초) 안에서 끝낸다.
 // 요청 body.job
 //   daily  하루 1회: VIX(마지막 저장일 10일 전부터, 처음이면 400일) → 이름 없는 종목 이름 채우기(시간 안에서 반복)
 //   vix    VIX만
@@ -18,13 +19,14 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const BUDGET_MS = 110_000;   // 벽시계 150초 제한 안에서 여유
 const KIS_GAP_MS = 250;      // KIS 초당 거래건수 — 다른 함수 몫을 남기고 초당 4건
+const HTTP_MS = 10_000;      // 요청 하나의 제한 시간(FRED는 20초)
 
 const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let lastKis = 0;
 
 async function rpc(name: string, args: Record<string, unknown> = {}) {
-  const { data, error } = await sb.rpc(name, args);
+  const { data, error } = await sb.rpc(name, args).abortSignal(AbortSignal.timeout(HTTP_MS));
   if (error) throw new Error(`${name}: ${error.message}`);
   return data;
 }
@@ -35,15 +37,19 @@ async function token(): Promise<string> {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/kis-auth`, {
     method: "POST",
     headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+    signal: AbortSignal.timeout(HTTP_MS),
   });
-  if (!res.ok) throw new Error(`kis-auth 호출 실패 (${res.status})`);
+  if (!res.ok) { await res.body?.cancel(); throw new Error(`kis-auth 호출 실패 (${res.status})`); }
   kisToken = (await res.json()).access_token;
-  return kisToken!;
+  if (!kisToken) throw new Error("kis-auth 토큰 없음");
+  return kisToken;
 }
 
-// KIS GET: 초당 거래건수 초과(EGW00201)·서버 오류만 1·2초 뒤 재시도. 조회 결과 없음은 null.
-async function kisGet(path: string, trId: string, params: Record<string, string>): Promise<any | null> {
+// KIS GET: 초당 거래건수 초과(EGW00201)·서버 오류는 1·2초 뒤 재시도, 토큰 만료·무효(EGW00123·EGW00121)는
+// 토큰을 다시 받아 재시도. 그 밖의 실패(없는 종목 등)는 null — 다음 후보로.
+async function kisGet(path: string, trId: string, params: Record<string, string>, timeLeft: () => number): Promise<any | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (timeLeft() < 12_000) throw new Error("시간 부족");
     const wait = lastKis + KIS_GAP_MS - Date.now();
     if (wait > 0) await sleep(wait);
     lastKis = Date.now();
@@ -54,29 +60,31 @@ async function kisGet(path: string, trId: string, params: Record<string, string>
         "content-type": "application/json", authorization: `Bearer ${await token()}`,
         appkey: KIS_APP_KEY, appsecret: KIS_APP_SECRET, tr_id: trId, custtype: "P",
       },
+      signal: AbortSignal.timeout(HTTP_MS),
     });
     const body = await res.json().catch(() => null);
     if (res.ok && body?.rt_cd === "0") return body;
-    if (body?.msg_cd !== "EGW00201" && res.status < 500) return null;   // 없는 종목 등 — 다음 후보로
+    if (body?.msg_cd === "EGW00123" || body?.msg_cd === "EGW00121") { kisToken = null; continue; }
+    if (body?.msg_cd !== "EGW00201" && res.status < 500) return null;
     await sleep(1_000 * (attempt + 1));
   }
   throw new Error(`KIS ${trId} 재시도 초과`);
 }
 
-async function usName(symbol: string, excd: string | null): Promise<string | null> {
+async function usName(symbol: string, excd: string | null, timeLeft: () => number): Promise<string | null> {
   const pdno = symbol.replace(".", "/");   // 클래스 주식 코드(BRK.B → BRK/B), 수집기와 같은 규칙
   for (const code of L.usTypeCodes(excd)) {
     const body = await kisGet("/uapi/overseas-price/v1/quotations/search-info", "CTPF1702R",
-      { PRDT_TYPE_CD: code, PDNO: pdno });
+      { PRDT_TYPE_CD: code, PDNO: pdno }, timeLeft);
     const name = L.pickName(body?.output, "US");
     if (name) return name;
   }
   return null;
 }
 
-async function krName(symbol: string): Promise<string | null> {
+async function krName(symbol: string, timeLeft: () => number): Promise<string | null> {
   const body = await kisGet("/uapi/domestic-stock/v1/quotations/search-stock-info", "CTPF1002R",
-    { PRDT_TYPE_CD: "300", PDNO: symbol });
+    { PRDT_TYPE_CD: "300", PDNO: symbol }, timeLeft);
   return L.pickName(body?.output, "KR");
 }
 
@@ -88,31 +96,42 @@ async function doVix(stats: Record<string, number>) {
   url.searchParams.set("file_type", "json");
   url.searchParams.set("observation_start", L.vixStart(state?.vix_last ?? null, today));
   url.searchParams.set("api_key", FRED_API_KEY);
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
   if (!res.ok) { await res.body?.cancel(); throw new Error(`FRED VIXCLS ${res.status}`); }   // URL엔 키가 있어 싣지 않음
   const rows = L.parseFred(await res.json());
   if (rows.length) stats.vix = (await rpc("tikr_extra_ingest", { p: { macro: rows } }))?.macro ?? 0;
 }
 
+// 커서('시장:코드')로 페이지를 넘긴다. 못 찾은 종목은 miss로 기록(7일 동안 목록에서 빠짐).
+// 종목 하나에서 오류가 나면 그때까지 찾은 이름·miss를 저장하고 멈춘다(다음 호출이 잇는다).
 async function doNames(stats: Record<string, number>, timeLeft: () => number) {
-  // 커서('시장:코드')로 페이지를 넘긴다 — 이름을 못 찾은 종목은 뒤로 지나가고, 다음 날 다시 시도된다.
   let after: string | null = null;
   while (timeLeft() > 20_000) {
     const state = await rpc("tikr_extra_state", { p_after: after });
     const todo = (state?.names_missing ?? []) as { market: "US" | "KR"; symbol: string; excd: string | null; key: string }[];
     if (todo.length === 0) return;
     const names: [string, string, string][] = [];
-    let done = 0;
+    const miss: [string, string][] = [];
+    let failed: unknown = null;
     for (const t of todo) {
       if (timeLeft() < 12_000) break;
-      const name = t.market === "US" ? await usName(t.symbol, t.excd) : await krName(t.symbol);
-      if (name) names.push([t.market, t.symbol, name]);
-      else stats.names_missing = (stats.names_missing ?? 0) + 1;
+      try {
+        const name = t.market === "US" ? await usName(t.symbol, t.excd, timeLeft) : await krName(t.symbol, timeLeft);
+        if (name) names.push([t.market, t.symbol, name]);
+        else miss.push([t.market, t.symbol]);
+      } catch (e) {
+        failed = e;
+        break;
+      }
       after = t.key;
-      done++;
     }
-    if (names.length) stats.names = (stats.names ?? 0) + ((await rpc("tikr_extra_ingest", { p: { names } }))?.names ?? 0);
-    if (done < todo.length) return;   // 시간 부족 — 다음 호출이 잇는다
+    if (names.length || miss.length) {
+      const r = await rpc("tikr_extra_ingest", { p: { names, miss } });
+      stats.names = (stats.names ?? 0) + (r?.names ?? 0);
+      stats.miss = (stats.miss ?? 0) + (r?.miss ?? 0);
+    }
+    if (failed) throw failed;
+    if (names.length + miss.length < todo.length) return;   // 시간 부족 — 다음 호출이 잇는다
   }
 }
 
@@ -130,11 +149,12 @@ Deno.serve(async (req) => {
   }
   const stats: Record<string, number> = {};
   const errors: string[] = [];
+  const note = (e: unknown) => errors.push(L.maskSecrets(String((e as Error)?.message ?? e)).slice(0, 200));
   if (job === "daily" || job === "vix") {
-    try { await doVix(stats); } catch (e) { errors.push(L.maskSecrets(String((e as Error).message ?? e)).slice(0, 200)); }
+    try { await doVix(stats); } catch (e) { note(e); }
   }
   if (job === "daily" || job === "names") {
-    try { await doNames(stats, timeLeft); } catch (e) { errors.push(L.maskSecrets(String((e as Error).message ?? e)).slice(0, 200)); }
+    try { await doNames(stats, timeLeft); } catch (e) { note(e); }
   }
   return Response.json({ job, ms: Date.now() - t0, ...stats, errors });
 });

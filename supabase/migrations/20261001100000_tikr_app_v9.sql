@@ -39,7 +39,16 @@ create table tikr_score.feedback (
 
 alter table tikr_score.names       enable row level security;
 alter table tikr_score.macro_daily enable row level security;
+-- 이름을 KIS에서 못 찾은 종목: 7일 동안 다시 묻지 않는다(못 찾는 종목이 할 일 목록 앞을 막지 않게)
+create table tikr_score.name_miss (
+  market   text not null,
+  symbol   text not null,
+  tried_at timestamptz not null default now(),
+  primary key (market, symbol)
+);
+
 alter table tikr_score.feedback    enable row level security;
+alter table tikr_score.name_miss   enable row level security;
 
 -- ── 일별 시리즈(홈 화면) ────────────────────────────
 -- 금·비트코인·국채는 기존 시세 기록(public.quote_history)의 한국 날짜별 마지막 값. 3일 지난 기록은 하루 1행으로 줄어 있다.
@@ -48,7 +57,7 @@ create or replace view tikr_score.quote_daily as
   select distinct on (h.symbol, (h.fetched_at at time zone 'Asia/Seoul')::date)
          h.symbol, (h.fetched_at at time zone 'Asia/Seoul')::date as d, h.price::float8 as v
   from public.quote_history h
-  where h.symbol in ('XAUUSD', 'BTC_KRW', 'US_BOND_10Y', 'KR_BOND_3Y')
+  where h.symbol in ('XAUUSD', 'BTC_KRW', 'US_BOND_10Y', 'KR_BOND_3Y') and h.price > 0
   order by h.symbol, (h.fetched_at at time zone 'Asia/Seoul')::date, h.fetched_at desc;
 
 create or replace view tikr_score.daily_series as
@@ -94,7 +103,7 @@ returns jsonb language sql immutable as $$
     from l cross join (values ('1M', 30), ('3M', 91), ('1Y', 365)) as k(k, days)
     left join lateral (select s.d, s.v from s where s.d <= l.d - k.days order by s.d desc limit 1) a on true
   ), r as (
-    select s.d, s.v / lag(s.v) over (order by s.d) - 1 as r from s
+    select s.d, case when lag(s.v) over (order by s.d) > 0 then s.v / lag(s.v) over (order by s.d) - 1 end as r from s
   ), rb as (
     select avg(abs(x.r)) as a, count(*) as n
     from (select r.r from r where r.r is not null order by r.d desc offset 1 limit 60) x
@@ -181,9 +190,9 @@ returns jsonb language sql stable as $$
     select k.k, u.symbol, u.theme, am.a20, cl.c
     from k cross join u
     left join lateral (
-      select case when count(*) >= 16 then avg(z.amount) end as a20
+      select case when count(z.amount) >= 16 then avg(z.amount) end as a20   -- 최근 20봉 중 거래대금 16개 이상
       from (select p.amount from tikr_score.px_daily p
-            where p.market = p_market and p.symbol = u.symbol and p.d <= k.t and p.amount is not null
+            where p.market = p_market and p.symbol = u.symbol and p.d <= k.t
             order by p.d desc limit 20) z
     ) am on true
     left join lateral (
@@ -370,7 +379,7 @@ returns jsonb language sql stable security definer set search_path = '' as $$
     select jsonb_agg(jsonb_build_object('market', z.market, 'symbol', z.symbol, 'name', z.name, 'bench', z.bench, 'theme', z.theme)
                      order by z.exact desc, z.symbol collate "C")
     from (
-      select cand.*, (upper(cand.symbol) = upper(q.q) or cand.name = q.q) as exact
+      select cand.*, coalesce(upper(cand.symbol) = upper(q.q) or cand.name = q.q, false) as exact
       from cand
       where upper(cand.symbol) like upper(replace(replace(replace(q.q, '\', '\\'), '%', '\%'), '_', '\_')) || '%'
          or cand.name ilike '%' || replace(replace(replace(q.q, '\', '\\'), '%', '\%'), '_', '\_') || '%'
@@ -399,7 +408,8 @@ end $$;
 
 -- 보유 종목 코드 등록: 유니버스에 테마 없이 편입(시총 조건 무관 추적). 앱 등록분은 현재 40개까지.
 --   편입일 = 오늘 − 7일: 수집기가 직전 평가일 작업에도 넣도록(이미 확정된 날은 엔진이 다시 계산하지 않는다).
---   이미 현재 구성원이면 이름만 보충. 수량·평단은 받지 않는다.
+--   이미 현재 구성원이면 이름만 보충. 수량·평단은 받지 않는다. 이름은 편입이 확정된(또는 이미 구성원인) 종목만 저장.
+--   예전에 제외된 구간이 있으면 새 편입일은 그 제외일 이후(구간 겹침·기본키 충돌 방지).
 create or replace function public.tikr_track_symbol(p_market text, p_symbol text, p_name text default null, p_bench text default null)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
@@ -408,6 +418,7 @@ declare
   nm text := nullif(btrim(coalesce(p_name, '')), '');
   b text;
   n int;
+  af date;
 begin
   if m not in ('US', 'KR') then
     return jsonb_build_object('ok', false, 'error', '시장은 US·KR');
@@ -417,11 +428,11 @@ begin
   end if;
   if nm is not null and length(nm) > 60 then nm := left(nm, 60); end if;
   perform pg_advisory_xact_lock(hashtext('tikr_track'));
-  if nm is not null then
-    insert into tikr_score.names (market, symbol, name, source) values (m, s, nm, 'app')
-    on conflict (market, symbol) do nothing;
-  end if;
   if exists (select 1 from tikr_score.universe x where x.market = m and x.symbol = s and x.active_to is null) then
+    if nm is not null then
+      insert into tikr_score.names (market, symbol, name, source) values (m, s, nm, 'app')
+      on conflict (market, symbol) do nothing;
+    end if;
     return jsonb_build_object('ok', true, 'new', false);
   end if;
   select count(*) into n from tikr_score.universe x
@@ -434,11 +445,21 @@ begin
   b := case when m = 'US' then 'COMP'
             when upper(coalesce(p_bench, '')) in ('KOSPI', 'KOSDAQ') then upper(p_bench)
             else 'KOSPI' end;
+  select greatest(current_date - 7, coalesce(max(x.active_to), current_date - 7)) into af
+  from tikr_score.universe x where x.market = m and x.symbol = s;
   insert into tikr_score.universe (market, symbol, bench, theme, kr_financial, active_from)
-  values (m, s, b, null, false, current_date - 7)
+  values (m, s, b, null, false, af)
   on conflict do nothing;
+  get diagnostics n = row_count;
+  if n = 0 then
+    return jsonb_build_object('ok', false, 'error', '등록하지 못했어요. 잠시 뒤 다시 시도해 주세요');
+  end if;
   insert into tikr_score.universe_log (market, symbol, action, reason, effective)
-  values (m, s, '편입', '앱 보유 등록', current_date - 7);
+  values (m, s, '편입', '앱 보유 등록', af);
+  if nm is not null then
+    insert into tikr_score.names (market, symbol, name, source) values (m, s, nm, 'app')
+    on conflict (market, symbol) do nothing;
+  end if;
   return jsonb_build_object('ok', true, 'new', true);
 end $$;
 
@@ -458,15 +479,18 @@ returns jsonb language sql stable security definer set search_path = '' as $$
             left join tikr_score.symbols sy on sy.market = u.market and sy.symbol = u.symbol
             where u.active_to is null
               and not exists (select 1 from tikr_score.names n where n.market = u.market and n.symbol = u.symbol)
+              and not exists (select 1 from tikr_score.name_miss x where x.market = u.market and x.symbol = u.symbol
+                                and x.tried_at > now() - interval '7 days')
               and (p_after is null or (u.market || ':' || u.symbol) collate "C" > p_after collate "C")
             order by k
             limit 60) z), '[]'::jsonb))
 $$;
 
--- 넣기: {"macro":[["VIX","2026-09-30",16.2],...], "names":[["US","MU","마이크론"],...]}. 이상값은 건너뛰고 수만 돌려준다.
+-- 넣기: {"macro":[["VIX","2026-09-30",16.2],...], "names":[["US","MU","마이크론"],...], "miss":[["US","XYZ"],...]}.
+--   이상값은 건너뛰고 수만 돌려준다. miss = KIS에서 이름을 못 찾은 종목(7일 뒤 다시 시도).
 create or replace function public.tikr_extra_ingest(p jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
-declare n_macro int := 0; n_names int := 0;
+declare n_macro int := 0; n_names int := 0; n_miss int := 0;
 begin
   insert into tikr_score.macro_daily (code, d, value)
   select e->>0, (e->>1)::date, (e->>2)::float8
@@ -485,7 +509,14 @@ begin
     where tikr_score.names.source <> 'manual';
   get diagnostics n_names = row_count;
 
-  return jsonb_build_object('macro', n_macro, 'names', n_names);
+  insert into tikr_score.name_miss (market, symbol, tried_at)
+  select e->>0, e->>1, now()
+  from jsonb_array_elements(coalesce(p->'miss', '[]'::jsonb)) as e
+  where jsonb_typeof(e) = 'array' and e->>0 in ('US', 'KR') and length(coalesce(e->>1, '')) between 1 and 12
+  on conflict (market, symbol) do update set tried_at = now();
+  get diagnostics n_miss = row_count;
+
+  return jsonb_build_object('macro', n_macro, 'names', n_names, 'miss', n_miss);
 end $$;
 
 -- ── 권한 ────────────────────────────────────────────
