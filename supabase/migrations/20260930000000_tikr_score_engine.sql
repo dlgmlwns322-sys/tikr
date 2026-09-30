@@ -56,6 +56,19 @@ create table tikr_score.fx_daily (
   primary key (pair, d)
 );
 
+-- 산출 보류(수집기가 기록). 종목의 최신 봉 날짜 ≤ d ≤ 평가일이면 거래정지처럼 순위에서 빼고 원점수 결측 + 사유 표시.
+--   가격 불일치 = 확정 산출 직전 2출처 대조 오차 0.5% 초과(d = 그 봉 날짜)
+--   당일 시세 없음 = 시장은 열렸는데 그 종목 봉을 받지 못함(d = 그 거래일)
+create table tikr_score.px_hold (
+  market     text not null check (market in ('US', 'KR')),
+  symbol     text not null,
+  d          date not null,
+  reason     text not null check (reason in ('가격 불일치', '당일 시세 없음')),
+  detail     jsonb,
+  created_at timestamptz not null default now(),
+  primary key (market, symbol, d)
+);
+
 -- 유니버스: 편입·제외는 매월 첫 거래일에만(순위 모집단 안정). 평가일 당시 구성원 = active_from ≤ d < active_to.
 create table tikr_score.universe (
   market       text not null check (market in ('US', 'KR')),
@@ -135,6 +148,7 @@ create table tikr_score.momentum_hist (
 alter table tikr_score.px_daily       enable row level security;
 alter table tikr_score.bench_daily    enable row level security;
 alter table tikr_score.fx_daily       enable row level security;
+alter table tikr_score.px_hold        enable row level security;
 alter table tikr_score.universe       enable row level security;
 alter table tikr_score.universe_log   enable row level security;
 alter table tikr_score.fund_snapshot  enable row level security;
@@ -198,6 +212,9 @@ begin
   ), r as (   -- 기간 수익률은 종가 N+1개, 거래대금 비율은 두 구간 모두 빠짐없이(20·60개)
     select b.symbol, b.n,
       (b.n >= 5 and b.zero5 = 5) as halted,
+      (select h.reason from tikr_score.px_hold h   -- 최신 봉 날짜 ≤ 보류일 ≤ 평가일 중 가장 늦은 보류
+        where h.market = p_market and h.symbol = b.symbol and h.d >= b.d0 and h.d <= p_d
+        order by h.d desc limit 1) as hold_reason,
       case when b.n >= 22  then b.c0 / b.c21  - 1 end as r1,
       case when b.n >= 64  then b.c0 / b.c63  - 1 end as r3,
       case when b.n >= 253 then b.c0 / b.c252 - 1 end as y,
@@ -205,10 +222,10 @@ begin
       case when b.n >= 64 and b.b0 is not null and b.b63 is not null then (b.c0 / b.c63 - 1) - (b.b0 / b.b63 - 1) end as r3x,
       case when b.n >= 80 and b.n20 = 20 and b.n60 = 60 and b.a60 > 0 then b.a20 / b.a60 end as v
     from b
-  ), lng as (   -- 백분위 대상: 거래정지 제외, 유효값만
+  ), lng as (   -- 백분위 대상: 거래정지·산출 보류 제외, 유효값만
     select r.symbol, t.f, t.val
     from r cross join lateral (values ('r3x', r.r3x), ('r1x', r.r1x), ('y', r.y), ('v', r.v)) as t(f, val)
-    where not r.halted and tikr_score.isnum(t.val)
+    where not r.halted and r.hold_reason is null and tikr_score.isnum(t.val)
   ), ranked as (   -- 평균 순위 백분위 (순위−1)/(N−1), N<20이면 결측
     select l.symbol, l.f,
       case when count(*) over (partition by l.f) >= 20 then
@@ -245,9 +262,11 @@ begin
   select p_market, a.symbol, p_d, a.n, a.r1, a.r3, a.y, a.r1x, a.r3x, a.v,
          a.p3x, a.p1x, a.py, a.pv, a.pv_eff, a.halted,
          case when a.halted then null
+              when a.hold_reason is not null then null
               when a.avail < 0.8 - 1e-9 then null
               else a.wsum / a.avail * 100 end,
          case when a.halted then '거래정지'
+              when a.hold_reason is not null then a.hold_reason
               when a.avail < 0.8 - 1e-9 then '산출 불가'
               when a.avail < 1 - 1e-9 then '부분 산출'
               else '정상' end,
@@ -285,6 +304,7 @@ begin
   delete from tikr_score.px_daily       where d < p_today - 800; get diagnostics k = row_count; n := n + k;
   delete from tikr_score.bench_daily    where d < p_today - 800; get diagnostics k = row_count; n := n + k;
   delete from tikr_score.fx_daily       where d < p_today - 800; get diagnostics k = row_count; n := n + k;
+  delete from tikr_score.px_hold        where d < p_today - 800; get diagnostics k = row_count; n := n + k;
   delete from tikr_score.momentum_daily where d < p_today - 250; get diagnostics k = row_count; n := n + k;
   delete from tikr_score.momentum_hist  where d < p_today - 250; get diagnostics k = row_count; n := n + k;
   return n;
