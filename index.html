@@ -201,7 +201,7 @@ function capKrw(x) { if (!isN(x) || x <= 0) return ''; if (x >= 1e12) return loc
 const S = {
   market: ['US', 'KR'].includes(store.get('tikr_market', 'US')) ? store.get('tikr_market', 'US') : 'US',
   period: ['1M', '3M', '1Y'].includes(store.get('tikr_period', '3M')) ? store.get('tikr_period', '3M') : '3M',
-  open: {}, pick: null, res: [], delArm: null, discTried: new Set(),
+  open: {}, pick: null, res: [], delArm: null, discTried: new Set(), retracked: new Set(),
 };
 function getHoldings() {
   const a = store.get('tikr_holdings', []);
@@ -632,7 +632,7 @@ async function scStock(r, my) {
     h += `<div class="panel"><div class="row" data-act="toggle" data-k="basis"><span style="font-size:var(--f3)">펀더멘털 · 밸류에이션 근거</span><span class="chev">${open ? '' : '›'}</span></div>${rows}</div>`;
   }
   const inW = W.some(w => w.market === m && w.symbol === code);
-  h += `<div class="panel"><button class="btn" data-act="watch" data-m="${m}" data-s="${esc(code)}" data-b="${esc(bench)}">${inW ? '관심종목에서 빼기' : '+ 관심종목 추가'}</button></div>`;
+  h += `<div class="panel"><button class="btn" data-act="watch" data-want="${inW ? 'remove' : 'add'}" data-m="${m}" data-s="${esc(code)}" data-b="${esc(bench)}">${inW ? '관심종목에서 빼기' : '+ 관심종목 추가'}</button></div>`;
   h += '</div>';
   if (!paint(my, h)) return;
   if (m === 'US') {
@@ -643,9 +643,13 @@ async function scStock(r, my) {
     }).catch(() => {});
   }
 }
-async function toggleWatch(m, sym, bench) {
-  const W = await watchlist().catch(() => []);
+// want = 누른 버튼의 의도('add'|'remove'). 누르는 순간 서버 목록을 다시 받아 의도와 맞을 때만 바꾼다
+// (화면을 그릴 때 목록 조회가 실패해 '추가'로 보였던 기존 종목이 눌려도 지워지지 않게). 조회 실패면 아무것도 하지 않는다.
+async function toggleWatch(m, sym, bench, want) {
+  CACHE.delete('mine:wl');
+  const W = await watchlist();
   const ex = W.find(w => w.market === m && w.symbol === sym);
+  if ((want === 'add' && ex) || (want === 'remove' && !ex)) { invalidate('mine'); return want; }
   if (MOCK) {
     let a = store.get('tikr_mock_wl', null) || [{ symbol: 'GEV', market: 'nasdaq' }];
     a = ex ? a.filter(w => w.symbol !== ex.raw) : a.concat([m === 'KR' ? { symbol: sym + (bench === 'KOSDAQ' ? '.KQ' : '.KS'), market: bench === 'KOSDAQ' ? 'kosdaq' : 'kospi' } : { symbol: sym, market: 'nasdaq' }]);
@@ -665,7 +669,7 @@ async function toggleWatch(m, sym, bench) {
     }
   }
   invalidate('mine');
-  return !ex;
+  return ex ? 'remove' : 'add';
 }
 
 // ═══════════════ 내 종목 ═══════════════
@@ -721,7 +725,7 @@ async function scMine(r, my, reason) {
     const P = psRows(ps); const latest = P[P.length - 1]; const prev = P[P.length - 2];
     h += '<div class="panel"><div class="g2 sum">'
       + `<div class="cell"><div class="l">평가금액</div><div class="v big num">${C.total != null ? esc(fN(C.total, 0) + '원') : '&nbsp;'}</div>${C.unvalued > 0 && C.total != null ? `<div class="s">일부 제외 ${C.unvalued}</div>` : ''}</div>`
-      + `<div class="cell" style="text-align:right"><div class="l">평가손익률</div><div class="v big num ${clx(C.tp)}">${C.tp != null ? esc(pct(C.tp)) : '&nbsp;'}</div></div></div>`;
+      + `<div class="cell" style="text-align:right"><div class="l">평가손익률</div><div class="v big num ${clx(C.tp)}">${C.tp != null ? esc(pct(C.tp)) : '&nbsp;'}</div>${C.tp != null && H.some(x => x.market === 'US') ? '<div class="s">현지 통화 기준</div>' : ''}</div></div>`;
     if (ps && ps.__err) h += '<div class="row"><span class="mu" style="font-size:var(--f2)">점수를 불러오지 못했어요</span><button class="hbtn" data-act="retry">다시 시도</button></div>';
     else if (latest && isN(latest.total)) {
       const tot = Math.round(latest.total); const pt = prev && isN(prev.total) ? Math.round(prev.total) : null; const dl = isN(pt) ? tot - pt : null;
@@ -752,6 +756,16 @@ async function scMine(r, my, reason) {
   }
   h += '<p class="foot"><button class="lnk" data-go="#/settings">연결 설정</button></p></div>';
   if (paint(my, h) && reason !== 'state') afterMain(my, 'mine');
+  // 추적 등록이 안 된 보유(추가 때 등록 실패 등)는 세션마다 한 번 다시 등록 — 시세는 다음 수집부터 들어온다
+  if (H.length && my === seq) {
+    for (const x of C.rows) {
+      const k = keyOf(x.h);
+      if (!x.it || x.it.tracked !== false || S.retracked.has(k)) continue;
+      S.retracked.add(k);
+      callRpc('tikr_track_symbol', { p_market: x.h.market, p_symbol: x.h.symbol, p_name: x.h.name || null,
+                                     p_bench: x.h.market === 'KR' ? (x.h.bench || null) : null }).catch(() => {});
+    }
+  }
   // 점검 '참고'용 발견 데이터(없으면 받아 두고 다시 그림)
   if (H.length && my === seq) {
     // 시장마다 한 번만 시도(실패해도 다시 그리기 반복 금지)
@@ -942,7 +956,7 @@ document.addEventListener('click', async e => {
   else if (a === 'gofind') { S.market = el.dataset.m === 'KR' ? 'KR' : 'US'; store.set('tikr_market', S.market); go('#/find'); }
   else if (a === 'watch') {
     el.disabled = true;
-    try { const added = await toggleWatch(el.dataset.m, el.dataset.s, el.dataset.b); toast(added ? '관심종목에 추가했어요' : '관심종목에서 뺐어요'); }
+    try { const r = await toggleWatch(el.dataset.m, el.dataset.s, el.dataset.b, el.dataset.want); toast(r === 'add' ? '관심종목에 추가했어요' : '관심종목에서 뺐어요'); }
     catch (err) { toast('처리하지 못했어요'); }
     route('state');
   }
@@ -950,7 +964,8 @@ document.addEventListener('click', async e => {
   else if (a === 'add') addPick(el);
   else if (a === 'del') {
     const i = Number(el.dataset.i);
-    if (S.delArm !== i) { S.delArm = i; el.textContent = '삭제 확인'; setTimeout(() => { if (S.delArm === i) { S.delArm = null; if (cur.name === 'edit') route('state'); } }, 3000); return; }
+    // 3초 안에 다시 누르면 삭제. 시간이 지나면 버튼 글자만 되돌린다(화면을 다시 그리면 입력 중인 값이 사라짐)
+    if (S.delArm !== i) { S.delArm = i; el.textContent = '삭제 확인'; setTimeout(() => { if (S.delArm === i) { S.delArm = null; if (el.isConnected) el.textContent = '삭제'; } }, 3000); return; }
     S.delArm = null; const H = getHoldings(); H.splice(i, 1); toast(setHoldings(H) ? '삭제했어요' : '기기에 저장하지 못했어요'); route('state');
   }
   else if (a === 'cfgsave') {
